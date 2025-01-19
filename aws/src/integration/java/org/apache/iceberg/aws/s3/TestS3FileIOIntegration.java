@@ -18,7 +18,7 @@
  */
 package org.apache.iceberg.aws.s3;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -41,14 +41,11 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.apache.iceberg.relocated.com.google.common.collect.Streams;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.junit.jupiter.api.Assertions;
+import org.assertj.core.api.Assumptions;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.PartitionMetadata;
 import software.amazon.awssdk.regions.Region;
@@ -57,14 +54,17 @@ import software.amazon.awssdk.services.kms.model.ListAliasesRequest;
 import software.amazon.awssdk.services.kms.model.ListAliasesResponse;
 import software.amazon.awssdk.services.kms.model.ScheduleKeyDeletionRequest;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.GetObjectAclRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectAclResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.Permission;
+import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.ServerSideEncryption;
+import software.amazon.awssdk.services.s3.model.VersioningConfiguration;
 import software.amazon.awssdk.services.s3control.S3ControlClient;
 import software.amazon.awssdk.utils.ImmutableMap;
 import software.amazon.awssdk.utils.IoUtils;
@@ -81,6 +81,7 @@ public class TestS3FileIOIntegration {
   private static String crossRegionBucketName;
   private static String accessPointName;
   private static String crossRegionAccessPointName;
+  private static String multiRegionAccessPointAlias;
   private static String prefix;
   private static byte[] contentBytes;
   private static String content;
@@ -89,7 +90,7 @@ public class TestS3FileIOIntegration {
   private String objectKey;
   private String objectUri;
 
-  @BeforeClass
+  @BeforeAll
   public static void beforeClass() {
     clientFactory = AwsClientFactories.defaultFactory();
     s3 = clientFactory.s3();
@@ -107,28 +108,38 @@ public class TestS3FileIOIntegration {
     content = new String(contentBytes, StandardCharsets.UTF_8);
     kmsKeyArn = kms.createKey().keyMetadata().arn();
 
-    AwsIntegTestUtil.createAccessPoint(s3Control, accessPointName, bucketName);
-    AwsIntegTestUtil.createAccessPoint(
-        crossRegionS3Control, crossRegionAccessPointName, crossRegionBucketName);
+    if (!S3URI.isS3DirectoryBucket(bucketName)) {
+      s3.putBucketVersioning(
+          PutBucketVersioningRequest.builder()
+              .bucket(bucketName)
+              .versioningConfiguration(
+                  VersioningConfiguration.builder().status(BucketVersioningStatus.ENABLED).build())
+              .build());
+      AwsIntegTestUtil.createAccessPoint(s3Control, accessPointName, bucketName);
+      AwsIntegTestUtil.createAccessPoint(
+          crossRegionS3Control, crossRegionAccessPointName, crossRegionBucketName);
+      multiRegionAccessPointAlias = AwsIntegTestUtil.testMultiRegionAccessPointAlias();
+    }
   }
 
-  @AfterClass
+  @AfterAll
   public static void afterClass() {
-    AwsIntegTestUtil.cleanS3Bucket(s3, bucketName, prefix);
-    AwsIntegTestUtil.deleteAccessPoint(s3Control, accessPointName);
-    AwsIntegTestUtil.deleteAccessPoint(crossRegionS3Control, crossRegionAccessPointName);
-    kms.scheduleKeyDeletion(
-        ScheduleKeyDeletionRequest.builder().keyId(kmsKeyArn).pendingWindowInDays(7).build());
-  }
-
-  @Before
-  public void before() {
-    objectKey = String.format("%s/%s", prefix, UUID.randomUUID().toString());
-    objectUri = String.format("s3://%s/%s", bucketName, objectKey);
+    if (S3URI.isS3DirectoryBucket(bucketName)) {
+      S3FileIO s3FileIO = new S3FileIO(clientFactory::s3);
+      AwsIntegTestUtil.cleanS3DirectoryBucket(s3FileIO.client(), bucketName, prefix);
+    } else {
+      AwsIntegTestUtil.cleanS3GeneralPurposeBucket(s3, bucketName, prefix);
+      AwsIntegTestUtil.deleteAccessPoint(s3Control, accessPointName);
+      AwsIntegTestUtil.deleteAccessPoint(crossRegionS3Control, crossRegionAccessPointName);
+      kms.scheduleKeyDeletion(
+          ScheduleKeyDeletionRequest.builder().keyId(kmsKeyArn).pendingWindowInDays(7).build());
+    }
   }
 
   @BeforeEach
   public void beforeEach() {
+    objectKey = String.format("%s/%s", prefix, UUID.randomUUID());
+    objectUri = String.format("s3://%s/%s", bucketName, objectKey);
     clientFactory.initialize(Maps.newHashMap());
   }
 
@@ -161,16 +172,13 @@ public class TestS3FileIOIntegration {
         PutObjectRequest.builder().bucket(bucketName).key(objectKey).build(),
         RequestBody.fromBytes(contentBytes));
     S3FileIO s3FileIO = new S3FileIO();
-    Map<String, String> properties = Maps.newHashMap();
-    properties.put(
-        S3FileIOProperties.CLIENT_FACTORY,
-        "org.apache.iceberg.aws.s3.DefaultS3FileIOAwsClientFactory");
-    s3FileIO.initialize(properties);
+    s3FileIO.initialize(Maps.newHashMap());
     validateRead(s3FileIO);
   }
 
   @Test
   public void testNewInputStreamWithAccessPoint() throws Exception {
+    requireAccessPointSupport();
     s3.putObject(
         PutObjectRequest.builder().bucket(bucketName).key(objectKey).build(),
         RequestBody.fromBytes(contentBytes));
@@ -183,7 +191,32 @@ public class TestS3FileIOIntegration {
   }
 
   @Test
+  public void testCrossRegionAccessEnabled() throws Exception {
+    clientFactory.initialize(
+        ImmutableMap.of(S3FileIOProperties.CROSS_REGION_ACCESS_ENABLED, "true"));
+    S3Client s3Client = clientFactory.s3();
+    String crossBucketObjectKey = String.format("%s/%s", prefix, UUID.randomUUID());
+    String crossBucketObjectUri =
+        String.format("s3://%s/%s", crossRegionBucketName, crossBucketObjectKey);
+    try {
+      s3Client.putObject(
+          PutObjectRequest.builder()
+              .bucket(crossRegionBucketName)
+              .key(crossBucketObjectKey)
+              .build(),
+          RequestBody.fromBytes(contentBytes));
+      // make a copy in cross-region bucket
+      S3FileIO s3FileIO = new S3FileIO(clientFactory::s3);
+      validateRead(s3FileIO, crossBucketObjectUri);
+    } finally {
+      AwsIntegTestUtil.cleanS3GeneralPurposeBucket(
+          s3Client, crossRegionBucketName, crossBucketObjectKey);
+    }
+  }
+
+  @Test
   public void testNewInputStreamWithCrossRegionAccessPoint() throws Exception {
+    requireAccessPointSupport();
     clientFactory.initialize(ImmutableMap.of(S3FileIOProperties.USE_ARN_REGION_ENABLED, "true"));
     S3Client s3Client = clientFactory.s3();
     s3Client.putObject(
@@ -206,33 +239,52 @@ public class TestS3FileIOIntegration {
   }
 
   @Test
+  public void testNewInputStreamWithMultiRegionAccessPoint() throws Exception {
+    Assumptions.assumeThat(multiRegionAccessPointAlias).isNotEmpty();
+    clientFactory.initialize(ImmutableMap.of(S3FileIOProperties.USE_ARN_REGION_ENABLED, "true"));
+    S3Client s3Client = clientFactory.s3();
+    s3Client.putObject(
+        PutObjectRequest.builder().bucket(bucketName).key(objectKey).build(),
+        RequestBody.fromBytes(contentBytes));
+    S3FileIO s3FileIO = new S3FileIO(clientFactory::s3);
+    s3FileIO.initialize(
+        ImmutableMap.of(
+            S3FileIOProperties.ACCESS_POINTS_PREFIX + bucketName,
+            testMultiRegionAccessPointARN(
+                AwsIntegTestUtil.testRegion(), multiRegionAccessPointAlias)));
+    validateRead(s3FileIO);
+  }
+
+  @Test
   public void testNewOutputStream() throws Exception {
     S3FileIO s3FileIO = new S3FileIO(clientFactory::s3);
     write(s3FileIO);
-    InputStream stream =
-        s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build());
-    String result = IoUtils.toUtf8String(stream);
-    stream.close();
-    Assert.assertEquals(content, result);
+    try (InputStream stream =
+        s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build())) {
+      String result = IoUtils.toUtf8String(stream);
+      assertThat(result).isEqualTo(content);
+    }
   }
 
   @Test
   public void testNewOutputStreamWithAccessPoint() throws Exception {
+    requireAccessPointSupport();
     S3FileIO s3FileIO = new S3FileIO(clientFactory::s3);
     s3FileIO.initialize(
         ImmutableMap.of(
             S3FileIOProperties.ACCESS_POINTS_PREFIX + bucketName,
             testAccessPointARN(AwsIntegTestUtil.testRegion(), accessPointName)));
     write(s3FileIO);
-    InputStream stream =
-        s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build());
-    String result = IoUtils.toUtf8String(stream);
-    stream.close();
-    Assert.assertEquals(content, result);
+    try (InputStream stream =
+        s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build())) {
+      String result = IoUtils.toUtf8String(stream);
+      assertThat(result).isEqualTo(content);
+    }
   }
 
   @Test
   public void testNewOutputStreamWithCrossRegionAccessPoint() throws Exception {
+    requireAccessPointSupport();
     clientFactory.initialize(ImmutableMap.of(S3FileIOProperties.USE_ARN_REGION_ENABLED, "true"));
     S3Client s3Client = clientFactory.s3();
     S3FileIO s3FileIO = new S3FileIO(clientFactory::s3);
@@ -241,17 +293,35 @@ public class TestS3FileIOIntegration {
             S3FileIOProperties.ACCESS_POINTS_PREFIX + bucketName,
             testAccessPointARN(AwsIntegTestUtil.testCrossRegion(), crossRegionAccessPointName)));
     write(s3FileIO);
-    InputStream stream =
+    try (InputStream stream =
         s3Client.getObject(
             GetObjectRequest.builder()
                 .bucket(
                     testAccessPointARN(
                         AwsIntegTestUtil.testCrossRegion(), crossRegionAccessPointName))
                 .key(objectKey)
-                .build());
-    String result = IoUtils.toUtf8String(stream);
-    stream.close();
-    Assert.assertEquals(content, result);
+                .build())) {
+      String result = IoUtils.toUtf8String(stream);
+      assertThat(result).isEqualTo(content);
+    }
+  }
+
+  @Test
+  public void testNewOutputStreamWithMultiRegionAccessPoint() throws Exception {
+    Assumptions.assumeThat(multiRegionAccessPointAlias).isNotEmpty();
+    clientFactory.initialize(ImmutableMap.of(S3FileIOProperties.USE_ARN_REGION_ENABLED, "true"));
+    S3FileIO s3FileIO = new S3FileIO(clientFactory::s3);
+    s3FileIO.initialize(
+        ImmutableMap.of(
+            S3FileIOProperties.ACCESS_POINTS_PREFIX + bucketName,
+            testMultiRegionAccessPointARN(
+                AwsIntegTestUtil.testRegion(), multiRegionAccessPointAlias)));
+    write(s3FileIO);
+    try (InputStream stream =
+        s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build())) {
+      String result = IoUtils.toUtf8String(stream);
+      assertThat(result).isEqualTo(content);
+    }
   }
 
   @Test
@@ -264,11 +334,12 @@ public class TestS3FileIOIntegration {
     GetObjectResponse response =
         s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build())
             .response();
-    Assert.assertEquals(ServerSideEncryption.AES256, response.serverSideEncryption());
+    assertThat(response.serverSideEncryption()).isEqualTo(ServerSideEncryption.AES256);
   }
 
   @Test
   public void testServerSideKmsEncryption() throws Exception {
+    requireKMSEncryptionSupport();
     S3FileIOProperties properties = new S3FileIOProperties();
     properties.setSseType(S3FileIOProperties.SSE_TYPE_KMS);
     properties.setSseKey(kmsKeyArn);
@@ -278,12 +349,13 @@ public class TestS3FileIOIntegration {
     GetObjectResponse response =
         s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build())
             .response();
-    Assert.assertEquals(ServerSideEncryption.AWS_KMS, response.serverSideEncryption());
-    Assert.assertEquals(response.ssekmsKeyId(), kmsKeyArn);
+    assertThat(response.serverSideEncryption()).isEqualTo(ServerSideEncryption.AWS_KMS);
+    assertThat(kmsKeyArn).isEqualTo(response.ssekmsKeyId());
   }
 
   @Test
   public void testServerSideKmsEncryptionWithDefaultKey() throws Exception {
+    requireKMSEncryptionSupport();
     S3FileIOProperties properties = new S3FileIOProperties();
     properties.setSseType(S3FileIOProperties.SSE_TYPE_KMS);
     S3FileIO s3FileIO = new S3FileIO(clientFactory::s3, properties);
@@ -292,16 +364,36 @@ public class TestS3FileIOIntegration {
     GetObjectResponse response =
         s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build())
             .response();
-    Assert.assertEquals(ServerSideEncryption.AWS_KMS, response.serverSideEncryption());
+    assertThat(response.serverSideEncryption()).isEqualTo(ServerSideEncryption.AWS_KMS);
     ListAliasesResponse listAliasesResponse =
         kms.listAliases(ListAliasesRequest.builder().keyId(response.ssekmsKeyId()).build());
-    Assert.assertTrue(listAliasesResponse.hasAliases());
-    Assert.assertEquals(1, listAliasesResponse.aliases().size());
-    Assert.assertEquals("alias/aws/s3", listAliasesResponse.aliases().get(0).aliasName());
+    assertThat(listAliasesResponse.hasAliases()).isTrue();
+    assertThat(listAliasesResponse.aliases())
+        .hasSize(1)
+        .first()
+        .satisfies(
+            aliasListEntry -> assertThat(aliasListEntry.aliasName()).isEqualTo("alias/aws/s3"));
+  }
+
+  @Test
+  public void testDualLayerServerSideKmsEncryption() throws Exception {
+    requireKMSEncryptionSupport();
+    S3FileIOProperties properties = new S3FileIOProperties();
+    properties.setSseType(S3FileIOProperties.DSSE_TYPE_KMS);
+    properties.setSseKey(kmsKeyArn);
+    S3FileIO s3FileIO = new S3FileIO(clientFactory::s3, properties);
+    write(s3FileIO);
+    validateRead(s3FileIO);
+    GetObjectResponse response =
+        s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(objectKey).build())
+            .response();
+    assertThat(response.serverSideEncryption()).isEqualTo(ServerSideEncryption.AWS_KMS_DSSE);
+    assertThat(response.ssekmsKeyId()).isEqualTo(kmsKeyArn);
   }
 
   @Test
   public void testServerSideCustomEncryption() throws Exception {
+    requireKMSEncryptionSupport();
     // generate key
     KeyGenerator keyGenerator = KeyGenerator.getInstance("AES");
     keyGenerator.init(256, new SecureRandom());
@@ -330,13 +422,14 @@ public class TestS3FileIOIntegration {
                     .sseCustomerKeyMD5(md5)
                     .build())
             .response();
-    Assert.assertNull(response.serverSideEncryption());
-    Assert.assertEquals(ServerSideEncryption.AES256.name(), response.sseCustomerAlgorithm());
-    Assert.assertEquals(md5, response.sseCustomerKeyMD5());
+    assertThat(response.serverSideEncryption()).isNull();
+    assertThat(response.sseCustomerAlgorithm()).isEqualTo(ServerSideEncryption.AES256.toString());
+    assertThat(response.sseCustomerKeyMD5()).isEqualTo(md5);
   }
 
   @Test
   public void testACL() throws Exception {
+    requireACLSupport();
     S3FileIOProperties properties = new S3FileIOProperties();
     properties.setAcl(ObjectCannedACL.BUCKET_OWNER_FULL_CONTROL);
     S3FileIO s3FileIO = new S3FileIO(clientFactory::s3, properties);
@@ -344,9 +437,11 @@ public class TestS3FileIOIntegration {
     validateRead(s3FileIO);
     GetObjectAclResponse response =
         s3.getObjectAcl(GetObjectAclRequest.builder().bucket(bucketName).key(objectKey).build());
-    Assert.assertTrue(response.hasGrants());
-    Assert.assertEquals(1, response.grants().size());
-    Assert.assertEquals(Permission.FULL_CONTROL, response.grants().get(0).permission());
+    assertThat(response.hasGrants()).isTrue();
+    assertThat(response.grants())
+        .hasSize(1)
+        .first()
+        .satisfies(grant -> assertThat(grant.permission()).isEqualTo(Permission.FULL_CONTROL));
   }
 
   @Test
@@ -366,6 +461,7 @@ public class TestS3FileIOIntegration {
 
   @Test
   public void testDeleteFilesMultipleBatchesWithAccessPoints() throws Exception {
+    requireAccessPointSupport();
     S3FileIO s3FileIO = new S3FileIO(clientFactory::s3, getDeletionTestProperties());
     s3FileIO.initialize(
         ImmutableMap.of(
@@ -376,6 +472,7 @@ public class TestS3FileIOIntegration {
 
   @Test
   public void testDeleteFilesMultipleBatchesWithCrossRegionAccessPoints() throws Exception {
+    requireKMSEncryptionSupport();
     clientFactory.initialize(ImmutableMap.of(S3FileIOProperties.USE_ARN_REGION_ENABLED, "true"));
     S3FileIO s3FileIO = new S3FileIO(clientFactory::s3, getDeletionTestProperties());
     s3FileIO.initialize(
@@ -404,17 +501,16 @@ public class TestS3FileIOIntegration {
     List<Integer> scaleSizes = Lists.newArrayList(1, 1000, 2500);
     String listPrefix = String.format("s3://%s/%s/%s", bucketName, prefix, "prefix-list-test");
 
-    scaleSizes
-        .parallelStream()
+    scaleSizes.parallelStream()
         .forEach(
             scale -> {
               String scalePrefix = String.format("%s/%s/", listPrefix, scale);
               createRandomObjects(scalePrefix, scale);
-              assertEquals((long) scale, Streams.stream(s3FileIO.listPrefix(scalePrefix)).count());
+              assertThat(s3FileIO.listPrefix(scalePrefix)).hasSize(scale);
             });
 
     long totalFiles = scaleSizes.stream().mapToLong(Integer::longValue).sum();
-    Assertions.assertEquals(totalFiles, Streams.stream(s3FileIO.listPrefix(listPrefix)).count());
+    assertThat(s3FileIO.listPrefix(listPrefix)).hasSize((int) totalFiles);
   }
 
   @SuppressWarnings("DangerousParallelStreamUsage")
@@ -426,15 +522,45 @@ public class TestS3FileIOIntegration {
     String deletePrefix = String.format("s3://%s/%s/%s", bucketName, prefix, "prefix-delete-test");
 
     List<Integer> scaleSizes = Lists.newArrayList(0, 5, 1000, 2500);
-    scaleSizes
-        .parallelStream()
+    scaleSizes.parallelStream()
         .forEach(
             scale -> {
               String scalePrefix = String.format("%s/%s/", deletePrefix, scale);
               createRandomObjects(scalePrefix, scale);
               s3FileIO.deletePrefix(scalePrefix);
-              assertEquals(0L, Streams.stream(s3FileIO.listPrefix(scalePrefix)).count());
+              assertThat(s3FileIO.listPrefix(scalePrefix)).isEmpty();
             });
+  }
+
+  @Test
+  public void testFileRecoveryHappyPath() throws Exception {
+    requireVersioningSupport();
+    S3FileIO s3FileIO = new S3FileIO(clientFactory::s3, new S3FileIOProperties());
+    String filePath = String.format("s3://%s/%s/%s", bucketName, prefix, "someFile.parquet");
+    write(s3FileIO, filePath);
+    s3FileIO.deleteFile(filePath);
+    assertThat(s3FileIO.newInputFile(filePath).exists()).isFalse();
+
+    assertThat(s3FileIO.recoverFile(filePath)).isTrue();
+    assertThat(s3FileIO.newInputFile(filePath).exists()).isTrue();
+  }
+
+  @Test
+  public void testFileRecoveryFailsToRecover() throws Exception {
+    requireVersioningSupport();
+    S3FileIO s3FileIO = new S3FileIO(clientFactory::s3, new S3FileIOProperties());
+    s3.putBucketVersioning(
+        PutBucketVersioningRequest.builder()
+            .bucket(bucketName)
+            .versioningConfiguration(
+                VersioningConfiguration.builder().status(BucketVersioningStatus.SUSPENDED).build())
+            .build());
+    String filePath = String.format("s3://%s/%s/%s", bucketName, prefix, "unversionedFile.parquet");
+    write(s3FileIO, filePath);
+    s3FileIO.deleteFile(filePath);
+    assertThat(s3FileIO.newInputFile(filePath).exists()).isFalse();
+
+    assertThat(s3FileIO.recoverFile(filePath)).isFalse();
   }
 
   private S3FileIOProperties getDeletionTestProperties() {
@@ -452,7 +578,7 @@ public class TestS3FileIOIntegration {
     }
     s3FileIO.deleteFiles(paths);
     for (String path : paths) {
-      Assert.assertFalse(s3FileIO.newInputFile(path).exists());
+      assertThat(s3FileIO.newInputFile(path).exists()).isFalse();
     }
   }
 
@@ -462,18 +588,22 @@ public class TestS3FileIOIntegration {
 
   private void write(S3FileIO s3FileIO, String uri) throws Exception {
     OutputFile outputFile = s3FileIO.newOutputFile(uri);
-    OutputStream outputStream = outputFile.create();
-    IoUtils.copy(new ByteArrayInputStream(contentBytes), outputStream);
-    outputStream.close();
+    try (OutputStream outputStream = outputFile.create()) {
+      IoUtils.copy(new ByteArrayInputStream(contentBytes), outputStream);
+    }
   }
 
   private void validateRead(S3FileIO s3FileIO) throws Exception {
-    InputFile file = s3FileIO.newInputFile(objectUri);
-    Assert.assertEquals(contentBytes.length, file.getLength());
-    InputStream stream = file.newStream();
-    String result = IoUtils.toUtf8String(stream);
-    stream.close();
-    Assert.assertEquals(content, result);
+    validateRead(s3FileIO, objectUri);
+  }
+
+  private void validateRead(S3FileIO s3FileIO, String s3Uri) throws Exception {
+    InputFile file = s3FileIO.newInputFile(s3Uri);
+    assertThat(file.getLength()).isEqualTo(contentBytes.length);
+    try (InputStream stream = file.newStream()) {
+      String result = IoUtils.toUtf8String(stream);
+      assertThat(result).isEqualTo(content);
+    }
   }
 
   private String testAccessPointARN(String region, String accessPoint) {
@@ -486,6 +616,13 @@ public class TestS3FileIOIntegration {
         accessPoint);
   }
 
+  private String testMultiRegionAccessPointARN(String region, String alias) {
+    // format: arn:aws:s3::account-id:accesspoint/MultiRegionAccessPoint_alias
+    return String.format(
+        "arn:%s:s3::%s:accesspoint/%s",
+        PartitionMetadata.of(Region.of(region)).id(), AwsIntegTestUtil.testAccountId(), alias);
+  }
+
   private void createRandomObjects(String objectPrefix, int count) {
     S3URI s3URI = new S3URI(objectPrefix);
     random
@@ -496,5 +633,25 @@ public class TestS3FileIOIntegration {
                 s3.putObject(
                     builder -> builder.bucket(s3URI.bucket()).key(s3URI.key() + i).build(),
                     RequestBody.empty()));
+  }
+
+  /** S3 Express doesn't support access points */
+  private void requireAccessPointSupport() {
+    Assumptions.assumeThat(S3URI.isS3DirectoryBucket(bucketName)).isFalse();
+  }
+
+  /** S3 Express doesn’t support KMS/custom encryption */
+  private void requireKMSEncryptionSupport() {
+    Assumptions.assumeThat(S3URI.isS3DirectoryBucket(bucketName)).isFalse();
+  }
+
+  /** S3 Express doesn't support versioning */
+  private void requireVersioningSupport() {
+    Assumptions.assumeThat(S3URI.isS3DirectoryBucket(bucketName)).isFalse();
+  }
+
+  /** File ACLs aren’t supported by S3 Express */
+  private void requireACLSupport() {
+    Assumptions.assumeThat(S3URI.isS3DirectoryBucket(bucketName)).isFalse();
   }
 }

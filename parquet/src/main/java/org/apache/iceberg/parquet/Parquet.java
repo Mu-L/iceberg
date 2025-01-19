@@ -27,6 +27,7 @@ import static org.apache.iceberg.TableProperties.DELETE_PARQUET_ROW_GROUP_CHECK_
 import static org.apache.iceberg.TableProperties.DELETE_PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT;
 import static org.apache.iceberg.TableProperties.DELETE_PARQUET_ROW_GROUP_SIZE_BYTES;
 import static org.apache.iceberg.TableProperties.PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX;
+import static org.apache.iceberg.TableProperties.PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX;
 import static org.apache.iceberg.TableProperties.PARQUET_BLOOM_FILTER_MAX_BYTES;
 import static org.apache.iceberg.TableProperties.PARQUET_BLOOM_FILTER_MAX_BYTES_DEFAULT;
 import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION;
@@ -54,6 +55,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -66,6 +68,7 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.StructLike;
+import org.apache.iceberg.SystemConfigs;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.avro.AvroSchemaUtil;
 import org.apache.iceberg.data.parquet.GenericParquetWriter;
@@ -93,6 +96,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.ArrayUtil;
 import org.apache.iceberg.util.ByteBuffers;
 import org.apache.iceberg.util.PropertyUtil;
@@ -113,8 +117,12 @@ import org.apache.parquet.hadoop.api.ReadSupport;
 import org.apache.parquet.hadoop.api.WriteSupport;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.MessageType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Parquet {
+  private static final Logger LOG = LoggerFactory.getLogger(Parquet.class);
+
   private Parquet() {}
 
   private static final Collection<String> READ_PROPERTIES_TO_REMOVE =
@@ -264,6 +272,43 @@ public class Parquet {
       return this;
     }
 
+    private <T> void setBloomFilterConfig(
+        Context context,
+        MessageType parquetSchema,
+        BiConsumer<String, Boolean> withBloomFilterEnabled,
+        BiConsumer<String, Double> withBloomFilterFPP) {
+
+      Map<Integer, String> fieldIdToParquetPath =
+          parquetSchema.getColumns().stream()
+              .collect(
+                  Collectors.toMap(
+                      col -> col.getPrimitiveType().getId().intValue(),
+                      col -> String.join(".", col.getPath())));
+
+      context
+          .columnBloomFilterEnabled()
+          .forEach(
+              (colPath, isEnabled) -> {
+                Types.NestedField fieldId = schema.findField(colPath);
+                if (fieldId == null) {
+                  LOG.warn("Skipping bloom filter config for missing field: {}", colPath);
+                  return;
+                }
+
+                String parquetColumnPath = fieldIdToParquetPath.get(fieldId.fieldId());
+                if (parquetColumnPath == null) {
+                  LOG.warn("Skipping bloom filter config for missing field: {}", fieldId);
+                  return;
+                }
+
+                withBloomFilterEnabled.accept(parquetColumnPath, Boolean.valueOf(isEnabled));
+                String fpp = context.columnBloomFilterFpp().get(colPath);
+                if (fpp != null) {
+                  withBloomFilterFPP.accept(parquetColumnPath, Double.parseDouble(fpp));
+                }
+              });
+    }
+
     public <D> FileAppender<D> build() throws IOException {
       Preconditions.checkNotNull(schema, "Schema is required");
       Preconditions.checkNotNull(name, "Table name is required and cannot be null");
@@ -283,7 +328,6 @@ public class Parquet {
       int rowGroupCheckMinRecordCount = context.rowGroupCheckMinRecordCount();
       int rowGroupCheckMaxRecordCount = context.rowGroupCheckMaxRecordCount();
       int bloomFilterMaxBytes = context.bloomFilterMaxBytes();
-      Map<String, String> columnBloomFilterEnabled = context.columnBloomFilterEnabled();
       boolean dictionaryEnabled = context.dictionaryEnabled();
 
       if (compressionLevel != null) {
@@ -340,11 +384,8 @@ public class Parquet {
                 .withMaxRowCountForPageSizeCheck(rowGroupCheckMaxRecordCount)
                 .withMaxBloomFilterBytes(bloomFilterMaxBytes);
 
-        for (Map.Entry<String, String> entry : columnBloomFilterEnabled.entrySet()) {
-          String colPath = entry.getKey();
-          String bloomEnabled = entry.getValue();
-          propsBuilder.withBloomFilterEnabled(colPath, Boolean.valueOf(bloomEnabled));
-        }
+        setBloomFilterConfig(
+            context, type, propsBuilder::withBloomFilterEnabled, propsBuilder::withBloomFilterFPP);
 
         ParquetProperties parquetProperties = propsBuilder.build();
 
@@ -377,11 +418,11 @@ public class Parquet {
                 .withDictionaryPageSize(dictionaryPageSize)
                 .withEncryption(fileEncryptionProperties);
 
-        for (Map.Entry<String, String> entry : columnBloomFilterEnabled.entrySet()) {
-          String colPath = entry.getKey();
-          String bloomEnabled = entry.getValue();
-          parquetWriteBuilder.withBloomFilterEnabled(colPath, Boolean.valueOf(bloomEnabled));
-        }
+        setBloomFilterConfig(
+            context,
+            type,
+            parquetWriteBuilder::withBloomFilterEnabled,
+            parquetWriteBuilder::withBloomFilterFPP);
 
         return new ParquetWriteAdapter<>(parquetWriteBuilder.build(), metricsConfig);
       }
@@ -397,6 +438,7 @@ public class Parquet {
       private final int rowGroupCheckMinRecordCount;
       private final int rowGroupCheckMaxRecordCount;
       private final int bloomFilterMaxBytes;
+      private final Map<String, String> columnBloomFilterFpp;
       private final Map<String, String> columnBloomFilterEnabled;
       private final boolean dictionaryEnabled;
 
@@ -410,6 +452,7 @@ public class Parquet {
           int rowGroupCheckMinRecordCount,
           int rowGroupCheckMaxRecordCount,
           int bloomFilterMaxBytes,
+          Map<String, String> columnBloomFilterFpp,
           Map<String, String> columnBloomFilterEnabled,
           boolean dictionaryEnabled) {
         this.rowGroupSize = rowGroupSize;
@@ -421,6 +464,7 @@ public class Parquet {
         this.rowGroupCheckMinRecordCount = rowGroupCheckMinRecordCount;
         this.rowGroupCheckMaxRecordCount = rowGroupCheckMaxRecordCount;
         this.bloomFilterMaxBytes = bloomFilterMaxBytes;
+        this.columnBloomFilterFpp = columnBloomFilterFpp;
         this.columnBloomFilterEnabled = columnBloomFilterEnabled;
         this.dictionaryEnabled = dictionaryEnabled;
       }
@@ -477,6 +521,9 @@ public class Parquet {
                 config, PARQUET_BLOOM_FILTER_MAX_BYTES, PARQUET_BLOOM_FILTER_MAX_BYTES_DEFAULT);
         Preconditions.checkArgument(bloomFilterMaxBytes > 0, "bloom Filter Max Bytes must be > 0");
 
+        Map<String, String> columnBloomFilterFpp =
+            PropertyUtil.propertiesWithPrefix(config, PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX);
+
         Map<String, String> columnBloomFilterEnabled =
             PropertyUtil.propertiesWithPrefix(config, PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX);
 
@@ -493,6 +540,7 @@ public class Parquet {
             rowGroupCheckMinRecordCount,
             rowGroupCheckMaxRecordCount,
             bloomFilterMaxBytes,
+            columnBloomFilterFpp,
             columnBloomFilterEnabled,
             dictionaryEnabled);
       }
@@ -561,6 +609,7 @@ public class Parquet {
             rowGroupCheckMaxRecordCount,
             PARQUET_BLOOM_FILTER_MAX_BYTES_DEFAULT,
             ImmutableMap.of(),
+            ImmutableMap.of(),
             dictionaryEnabled);
       }
 
@@ -606,6 +655,10 @@ public class Parquet {
 
       int bloomFilterMaxBytes() {
         return bloomFilterMaxBytes;
+      }
+
+      Map<String, String> columnBloomFilterFpp() {
+        return columnBloomFilterFpp;
       }
 
       Map<String, String> columnBloomFilterEnabled() {
@@ -1063,6 +1116,10 @@ public class Parquet {
       return this;
     }
 
+    /**
+     * @deprecated will be removed in 2.0.0; use {@link #createReaderFunc(Function)} instead
+     */
+    @Deprecated
     public ReadBuilder readSupport(ReadSupport<?> newFilterSupport) {
       this.readSupport = newFilterSupport;
       return this;
@@ -1090,6 +1147,10 @@ public class Parquet {
       return this;
     }
 
+    /**
+     * @deprecated will be removed in 2.0.0; use {@link #createReaderFunc(Function)} instead
+     */
+    @Deprecated
     public ReadBuilder callInit() {
       this.callInit = true;
       return this;
@@ -1162,27 +1223,29 @@ public class Parquet {
 
         ParquetReadOptions options = optionsBuilder.build();
 
+        NameMapping mapping;
+        if (nameMapping != null) {
+          mapping = nameMapping;
+        } else if (SystemConfigs.NETFLIX_UNSAFE_PARQUET_ID_FALLBACK_ENABLED.value()) {
+          mapping = null;
+        } else {
+          mapping = NameMapping.empty();
+        }
+
         if (batchedReaderFunc != null) {
           return new VectorizedParquetReader<>(
               file,
               schema,
               options,
               batchedReaderFunc,
-              nameMapping,
+              mapping,
               filter,
               reuseContainers,
               caseSensitive,
               maxRecordsPerBatch);
         } else {
           return new org.apache.iceberg.parquet.ParquetReader<>(
-              file,
-              schema,
-              options,
-              readerFunc,
-              nameMapping,
-              filter,
-              reuseContainers,
-              caseSensitive);
+              file, schema, options, readerFunc, mapping, filter, reuseContainers, caseSensitive);
         }
       }
 

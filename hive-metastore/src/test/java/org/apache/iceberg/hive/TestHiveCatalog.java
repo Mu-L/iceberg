@@ -52,7 +52,6 @@ import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.FileFormat;
-import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
 import org.apache.iceberg.Schema;
@@ -82,7 +81,6 @@ import org.apache.iceberg.transforms.Transforms;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.JsonUtil;
 import org.apache.thrift.TException;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -95,7 +93,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Run all the tests from abstract of {@link CatalogTests} with few specific tests related to HIVE.
  */
 public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
-  private static ImmutableMap meta =
+  private static final ImmutableMap META =
       ImmutableMap.of(
           "owner", "apache",
           "group", "iceberg",
@@ -112,18 +110,28 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
 
   @BeforeEach
   public void before() throws TException {
-    catalog =
-        (HiveCatalog)
-            CatalogUtil.loadCatalog(
-                HiveCatalog.class.getName(),
-                CatalogUtil.ICEBERG_CATALOG_TYPE_HIVE,
-                ImmutableMap.of(
-                    CatalogProperties.CLIENT_POOL_CACHE_EVICTION_INTERVAL_MS,
-                    String.valueOf(TimeUnit.SECONDS.toMillis(10))),
-                HIVE_METASTORE_EXTENSION.hiveConf());
+    catalog = initCatalog("hive", ImmutableMap.of());
     String dbPath = HIVE_METASTORE_EXTENSION.metastore().getDatabasePath(DB_NAME);
     Database db = new Database(DB_NAME, "description", dbPath, Maps.newHashMap());
     HIVE_METASTORE_EXTENSION.metastoreClient().createDatabase(db);
+  }
+
+  @Override
+  protected HiveCatalog initCatalog(String catalogName, Map<String, String> additionalProperties) {
+    Map<String, String> properties =
+        ImmutableMap.of(
+            CatalogProperties.CLIENT_POOL_CACHE_EVICTION_INTERVAL_MS,
+            String.valueOf(TimeUnit.SECONDS.toMillis(10)));
+
+    return (HiveCatalog)
+        CatalogUtil.loadCatalog(
+            HiveCatalog.class.getName(),
+            catalogName,
+            ImmutableMap.<String, String>builder()
+                .putAll(properties)
+                .putAll(additionalProperties)
+                .build(),
+            HIVE_METASTORE_EXTENSION.hiveConf());
   }
 
   @AfterEach
@@ -155,6 +163,21 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
     return new Schema(
         required(1, "id", Types.IntegerType.get(), "unique ID"),
         required(2, "data", Types.StringType.get()));
+  }
+
+  @Test
+  public void testInvalidIdentifiersWithRename() {
+    TableIdentifier invalidFrom = TableIdentifier.of(Namespace.of("l1", "l2"), "table1");
+    TableIdentifier validTo = TableIdentifier.of(Namespace.of("l1"), "renamedTable");
+    assertThatThrownBy(() -> catalog.renameTable(invalidFrom, validTo))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid identifier: " + invalidFrom);
+
+    TableIdentifier validFrom = TableIdentifier.of(Namespace.of("l1"), "table1");
+    TableIdentifier invalidTo = TableIdentifier.of(Namespace.of("l1", "l2"), "renamedTable");
+    assertThatThrownBy(() -> catalog.renameTable(validFrom, invalidTo))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid identifier: " + invalidTo);
   }
 
   @Test
@@ -413,7 +436,7 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
   @Test
   public void testDatabaseAndNamespaceWithLocation() throws Exception {
     Namespace namespace1 = Namespace.of("noLocation");
-    catalog.createNamespace(namespace1, meta);
+    catalog.createNamespace(namespace1, META);
     Database database1 =
         HIVE_METASTORE_EXTENSION.metastoreClient().getDatabase(namespace1.toString());
 
@@ -432,7 +455,7 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
     hiveLocalDir = hiveLocalDir.substring(0, hiveLocalDir.length() - 1);
     ImmutableMap newMeta =
         ImmutableMap.<String, String>builder()
-            .putAll(meta)
+            .putAll(META)
             .put("location", hiveLocalDir)
             .buildOrThrow();
     Namespace namespace2 = Namespace.of("haveLocation");
@@ -529,12 +552,12 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
   public void testLoadNamespaceMeta() throws TException {
     Namespace namespace = Namespace.of("dbname_load");
 
-    catalog.createNamespace(namespace, meta);
+    catalog.createNamespace(namespace, META);
 
     Map<String, String> nameMata = catalog.loadNamespaceMetadata(namespace);
     assertThat(nameMata).containsEntry("owner", "apache");
     assertThat(nameMata).containsEntry("group", "iceberg");
-    assertThat(catalog.convertToDatabase(namespace, meta).getLocationUri())
+    assertThat(catalog.convertToDatabase(namespace, META).getLocationUri())
         .as("There no same location for db and namespace")
         .isEqualTo(nameMata.get("location"));
   }
@@ -543,7 +566,7 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
   public void testNamespaceExists() throws TException {
     Namespace namespace = Namespace.of("dbname_exists");
 
-    catalog.createNamespace(namespace, meta);
+    catalog.createNamespace(namespace, META);
 
     assertThat(catalog.namespaceExists(namespace)).as("Should true to namespace exist").isTrue();
     assertThat(catalog.namespaceExists(Namespace.of("db2", "db2", "ns2")))
@@ -863,7 +886,7 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
     TableIdentifier identifier = TableIdentifier.of(namespace, "table");
     Schema schema = getTestSchema();
 
-    catalog.createNamespace(namespace, meta);
+    catalog.createNamespace(namespace, META);
     catalog.createTable(identifier, schema);
     Map<String, String> nameMata = catalog.loadNamespaceMetadata(namespace);
     assertThat(nameMata).containsEntry("owner", "apache");
@@ -1043,7 +1066,7 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
         .doesNotContainKey(CURRENT_SNAPSHOT_ID)
         .doesNotContainKey(CURRENT_SNAPSHOT_TIMESTAMP);
 
-    ops.setSchema(metadata, parameters);
+    ops.setSchema(metadata.schema(), parameters);
     assertThat(parameters).doesNotContainKey(CURRENT_SCHEMA);
 
     ops.setPartitionSpec(metadata, parameters);
@@ -1180,56 +1203,5 @@ public class TestHiveCatalog extends CatalogTests<HiveCatalog> {
     Database database = hiveCatalog.convertToDatabase(Namespace.of("database"), ImmutableMap.of());
 
     assertThat(database.getLocationUri()).isEqualTo("s3://bucket/database.db");
-  }
-
-  // TODO: This test should be removed after fix of https://github.com/apache/iceberg/issues/9289.
-  @Test
-  @Override
-  public void testRenameTableDestinationTableAlreadyExists() {
-    Namespace ns = Namespace.of("newdb");
-    TableIdentifier renamedTable = TableIdentifier.of(ns, "table_renamed");
-
-    if (requiresNamespaceCreate()) {
-      catalog.createNamespace(ns);
-    }
-
-    Assertions.assertThat(catalog.tableExists(TABLE))
-        .as("Source table should not exist before create")
-        .isFalse();
-
-    catalog.buildTable(TABLE, SCHEMA).create();
-    Assertions.assertThat(catalog.tableExists(TABLE))
-        .as("Source table should exist after create")
-        .isTrue();
-
-    Assertions.assertThat(catalog.tableExists(renamedTable))
-        .as("Destination table should not exist before create")
-        .isFalse();
-
-    catalog.buildTable(renamedTable, SCHEMA).create();
-    Assertions.assertThat(catalog.tableExists(renamedTable))
-        .as("Destination table should exist after create")
-        .isTrue();
-
-    // With fix of issues#9289,it should match with CatalogTests and expect
-    // AlreadyExistsException.class
-    // and message should contain as "Table already exists"
-    Assertions.assertThatThrownBy(() -> catalog.renameTable(TABLE, renamedTable))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessageContaining("new table newdb.table_renamed already exists");
-    Assertions.assertThat(catalog.tableExists(TABLE))
-        .as("Source table should still exist after failed rename")
-        .isTrue();
-    Assertions.assertThat(catalog.tableExists(renamedTable))
-        .as("Destination table should still exist after failed rename")
-        .isTrue();
-
-    String sourceTableUUID =
-        ((HasTableOperations) catalog.loadTable(TABLE)).operations().current().uuid();
-    String destinationTableUUID =
-        ((HasTableOperations) catalog.loadTable(renamedTable)).operations().current().uuid();
-    Assertions.assertThat(sourceTableUUID)
-        .as("Source and destination table should remain distinct after failed rename")
-        .isNotEqualTo(destinationTableUUID);
   }
 }

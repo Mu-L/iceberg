@@ -18,6 +18,9 @@
  */
 package org.apache.iceberg.aws;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.util.Map;
 import java.util.Optional;
 import org.apache.iceberg.CatalogProperties;
@@ -25,7 +28,6 @@ import org.apache.iceberg.aws.s3.S3FileIOProperties;
 import org.apache.iceberg.aws.s3.signer.S3V4RestSignerClient;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -34,6 +36,7 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.core.client.config.SdkAdvancedClientOption;
+import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.core.signer.Signer;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
@@ -46,7 +49,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.SSE_TYPE, S3FileIOProperties.SSE_TYPE_CUSTOM);
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot initialize SSE-C S3FileIO with null encryption key");
   }
@@ -57,7 +60,7 @@ public class TestS3FileIOProperties {
     map.put(S3FileIOProperties.SSE_TYPE, S3FileIOProperties.SSE_TYPE_CUSTOM);
     map.put(S3FileIOProperties.SSE_KEY, "something");
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot initialize SSE-C S3FileIO with null encryption key MD5");
   }
@@ -67,7 +70,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.ACL, ObjectCannedACL.AUTHENTICATED_READ.toString());
     S3FileIOProperties properties = new S3FileIOProperties(map);
-    Assertions.assertThat(properties.acl()).isEqualTo(ObjectCannedACL.AUTHENTICATED_READ);
+    assertThat(properties.acl()).isEqualTo(ObjectCannedACL.AUTHENTICATED_READ);
   }
 
   @Test
@@ -75,7 +78,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.ACL, "bad-input");
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot support S3 CannedACL bad-input");
   }
@@ -85,7 +88,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.MULTIPART_SIZE, "1");
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Minimum multipart upload object size must be larger than 5 MB.");
   }
@@ -95,7 +98,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.MULTIPART_SIZE, "5368709120"); // 5GB
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Input malformed or exceeded maximum multipart upload size 5GB: 5368709120");
   }
@@ -105,7 +108,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.MULTIPART_THRESHOLD_FACTOR, "0.9");
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Multipart threshold factor must be >= to 1.0");
   }
@@ -115,7 +118,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.DELETE_BATCH_SIZE, "2000");
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Deletion batch size must be between 1 and 1000");
   }
@@ -125,7 +128,7 @@ public class TestS3FileIOProperties {
     Map<String, String> map = Maps.newHashMap();
     map.put(S3FileIOProperties.DELETE_BATCH_SIZE, "0");
 
-    Assertions.assertThatThrownBy(() -> new S3FileIOProperties(map))
+    assertThatThrownBy(() -> new S3FileIOProperties(map))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Deletion batch size must be between 1 and 1000");
   }
@@ -144,7 +147,7 @@ public class TestS3FileIOProperties {
     Mockito.verify(mockS3ClientBuilder).credentialsProvider(awsCredentialsProviderCaptor.capture());
     AwsCredentialsProvider capturedAwsCredentialsProvider = awsCredentialsProviderCaptor.getValue();
 
-    Assertions.assertThat(capturedAwsCredentialsProvider)
+    assertThat(capturedAwsCredentialsProvider)
         .as("Should use default credentials if nothing is set")
         .isInstanceOf(DefaultCredentialsProvider.class);
   }
@@ -165,13 +168,13 @@ public class TestS3FileIOProperties {
     Mockito.verify(mockS3ClientBuilder).credentialsProvider(awsCredentialsProviderCaptor.capture());
     AwsCredentialsProvider capturedAwsCredentialsProvider = awsCredentialsProviderCaptor.getValue();
 
-    Assertions.assertThat(capturedAwsCredentialsProvider.resolveCredentials())
+    assertThat(capturedAwsCredentialsProvider.resolveCredentials())
         .as("Should use basic credentials if access key ID and secret access key are set")
         .isInstanceOf(AwsBasicCredentials.class);
-    Assertions.assertThat(capturedAwsCredentialsProvider.resolveCredentials().accessKeyId())
+    assertThat(capturedAwsCredentialsProvider.resolveCredentials().accessKeyId())
         .as("The access key id should be the same as the one set by tag S3FILEIO_ACCESS_KEY_ID")
         .isEqualTo("key");
-    Assertions.assertThat(capturedAwsCredentialsProvider.resolveCredentials().secretAccessKey())
+    assertThat(capturedAwsCredentialsProvider.resolveCredentials().secretAccessKey())
         .as(
             "The secret access key should be the same as the one set by tag S3FILEIO_SECRET_ACCESS_KEY")
         .isEqualTo("secret");
@@ -194,13 +197,13 @@ public class TestS3FileIOProperties {
     Mockito.verify(mockS3ClientBuilder).credentialsProvider(awsCredentialsProviderCaptor.capture());
     AwsCredentialsProvider capturedAwsCredentialsProvider = awsCredentialsProviderCaptor.getValue();
 
-    Assertions.assertThat(capturedAwsCredentialsProvider.resolveCredentials())
+    assertThat(capturedAwsCredentialsProvider.resolveCredentials())
         .as("Should use session credentials if session token is set")
         .isInstanceOf(AwsSessionCredentials.class);
-    Assertions.assertThat(capturedAwsCredentialsProvider.resolveCredentials().accessKeyId())
+    assertThat(capturedAwsCredentialsProvider.resolveCredentials().accessKeyId())
         .as("The access key id should be the same as the one set by tag S3FILEIO_ACCESS_KEY_ID")
         .isEqualTo("key");
-    Assertions.assertThat(capturedAwsCredentialsProvider.resolveCredentials().secretAccessKey())
+    assertThat(capturedAwsCredentialsProvider.resolveCredentials().secretAccessKey())
         .as(
             "The secret access key should be the same as the one set by tag S3FILEIO_SECRET_ACCESS_KEY")
         .isEqualTo("secret");
@@ -212,7 +215,7 @@ public class TestS3FileIOProperties {
         ImmutableMap.of(S3FileIOProperties.REMOTE_SIGNING_ENABLED, "true");
     S3FileIOProperties s3Properties = new S3FileIOProperties(properties);
 
-    Assertions.assertThatThrownBy(() -> s3Properties.applySignerConfiguration(S3Client.builder()))
+    assertThatThrownBy(() -> s3Properties.applySignerConfiguration(S3Client.builder()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("S3 signer service URI is required");
   }
@@ -230,10 +233,38 @@ public class TestS3FileIOProperties {
 
     Optional<Signer> signer =
         builder.overrideConfiguration().advancedOption(SdkAdvancedClientOption.SIGNER);
-    Assertions.assertThat(signer).isPresent().get().isInstanceOf(S3V4RestSignerClient.class);
+    assertThat(signer).isPresent().get().isInstanceOf(S3V4RestSignerClient.class);
     S3V4RestSignerClient signerClient = (S3V4RestSignerClient) signer.get();
-    Assertions.assertThat(signerClient.baseSignerUri()).isEqualTo(uri);
-    Assertions.assertThat(signerClient.properties()).isEqualTo(properties);
+    assertThat(signerClient.baseSignerUri()).isEqualTo(uri);
+    assertThat(signerClient.properties()).isEqualTo(properties);
+  }
+
+  @Test
+  public void s3RemoteSigningEnabledWithUserAgentAndRetryPolicy() {
+    String uri = "http://localhost:12345";
+    Map<String, String> properties =
+        ImmutableMap.of(
+            S3FileIOProperties.REMOTE_SIGNING_ENABLED, "true", CatalogProperties.URI, uri);
+    S3FileIOProperties s3Properties = new S3FileIOProperties(properties);
+    S3ClientBuilder builder = S3Client.builder();
+
+    s3Properties.applySignerConfiguration(builder);
+    s3Properties.applyUserAgentConfigurations(builder);
+    s3Properties.applyRetryConfigurations(builder);
+
+    Optional<String> userAgent =
+        builder.overrideConfiguration().advancedOption(SdkAdvancedClientOption.USER_AGENT_PREFIX);
+    assertThat(userAgent).isPresent().get().satisfies(x -> assertThat(x).startsWith("s3fileio"));
+
+    Optional<Signer> signer =
+        builder.overrideConfiguration().advancedOption(SdkAdvancedClientOption.SIGNER);
+    assertThat(signer).isPresent().get().isInstanceOf(S3V4RestSignerClient.class);
+    S3V4RestSignerClient signerClient = (S3V4RestSignerClient) signer.get();
+    assertThat(signerClient.baseSignerUri()).isEqualTo(uri);
+    assertThat(signerClient.properties()).isEqualTo(properties);
+
+    Optional<RetryPolicy> retryPolicy = builder.overrideConfiguration().retryPolicy();
+    assertThat(retryPolicy).isPresent().get().isInstanceOf(RetryPolicy.class);
   }
 
   @Test
@@ -247,7 +278,7 @@ public class TestS3FileIOProperties {
 
     Optional<Signer> signer =
         builder.overrideConfiguration().advancedOption(SdkAdvancedClientOption.SIGNER);
-    Assertions.assertThat(signer).isNotPresent();
+    assertThat(signer).isNotPresent();
   }
 
   @Test
@@ -259,7 +290,7 @@ public class TestS3FileIOProperties {
     S3ClientBuilder builder = S3Client.builder();
 
     s3Properties.applyS3AccessGrantsConfigurations(builder);
-    Assertions.assertThat(builder.plugins().size()).isEqualTo(1);
+    assertThat(builder.plugins().size()).isEqualTo(1);
   }
 
   @Test
@@ -271,7 +302,7 @@ public class TestS3FileIOProperties {
     S3ClientBuilder builder = S3Client.builder();
 
     s3Properties.applyS3AccessGrantsConfigurations(builder);
-    Assertions.assertThat(builder.plugins().size()).isEqualTo(0);
+    assertThat(builder.plugins().size()).isEqualTo(0);
 
     // Implicitly false
     properties = ImmutableMap.of();
@@ -279,6 +310,14 @@ public class TestS3FileIOProperties {
     builder = S3Client.builder();
 
     s3Properties.applyS3AccessGrantsConfigurations(builder);
-    Assertions.assertThat(builder.plugins().size()).isEqualTo(0);
+    assertThat(builder.plugins().size()).isEqualTo(0);
+  }
+
+  @Test
+  public void testIsTreatS3DirectoryBucketListPrefixAsDirectoryEnabled() {
+    Map<String, String> map = Maps.newHashMap();
+    map.put(S3FileIOProperties.S3_DIRECTORY_BUCKET_LIST_PREFIX_AS_DIRECTORY, "false");
+    S3FileIOProperties properties = new S3FileIOProperties(map);
+    assertThat(properties.isS3DirectoryBucketListPrefixAsDirectory()).isEqualTo(false);
   }
 }

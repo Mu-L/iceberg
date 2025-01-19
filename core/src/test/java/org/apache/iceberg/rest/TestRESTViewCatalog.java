@@ -18,20 +18,31 @@
  */
 package org.apache.iceberg.rest;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.File;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SessionCatalog;
+import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.rest.RESTCatalogAdapter.HTTPMethod;
+import org.apache.iceberg.rest.responses.ConfigResponse;
 import org.apache.iceberg.rest.responses.ErrorResponse;
+import org.apache.iceberg.rest.responses.ListTablesResponse;
+import org.apache.iceberg.rest.responses.LoadViewResponse;
 import org.apache.iceberg.view.ViewCatalogTests;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.gzip.GzipHandler;
@@ -39,16 +50,20 @@ import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mockito;
 
 public class TestRESTViewCatalog extends ViewCatalogTests<RESTCatalog> {
   private static final ObjectMapper MAPPER = RESTObjectMapper.mapper();
 
-  @TempDir private Path temp;
+  @TempDir protected Path temp;
 
-  private RESTCatalog restCatalog;
-  private InMemoryCatalog backendCatalog;
-  private Server httpServer;
+  protected RESTCatalog restCatalog;
+  protected InMemoryCatalog backendCatalog;
+  protected Server httpServer;
 
   @BeforeEach
   public void createCatalog() throws Exception {
@@ -57,7 +72,11 @@ public class TestRESTViewCatalog extends ViewCatalogTests<RESTCatalog> {
     this.backendCatalog = new InMemoryCatalog();
     this.backendCatalog.initialize(
         "in-memory",
-        ImmutableMap.of(CatalogProperties.WAREHOUSE_LOCATION, warehouse.getAbsolutePath()));
+        ImmutableMap.<String, String>builder()
+            .put(CatalogProperties.WAREHOUSE_LOCATION, warehouse.getAbsolutePath())
+            .put(CatalogProperties.VIEW_DEFAULT_PREFIX + "key1", "catalog-default-key1")
+            .put(CatalogProperties.VIEW_DEFAULT_PREFIX + "key2", "catalog-default-key2")
+            .build());
 
     RESTCatalogAdapter adaptor =
         new RESTCatalogAdapter(backendCatalog) {
@@ -79,15 +98,11 @@ public class TestRESTViewCatalog extends ViewCatalogTests<RESTCatalog> {
           }
         };
 
-    RESTCatalogServlet servlet = new RESTCatalogServlet(adaptor);
     ServletContextHandler servletContext =
         new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
     servletContext.setContextPath("/");
-    ServletHolder servletHolder = new ServletHolder(servlet);
-    servletHolder.setInitParameter("javax.ws.rs.Application", "ServiceListPublic");
-    servletContext.addServlet(servletHolder, "/*");
-    servletContext.setVirtualHosts(null);
-    servletContext.setGzipHandler(new GzipHandler());
+    servletContext.addServlet(new ServletHolder(new RESTCatalogServlet(adaptor)), "/*");
+    servletContext.setHandler(new GzipHandler());
 
     this.httpServer = new Server(0);
     httpServer.setHandler(servletContext);
@@ -142,6 +157,109 @@ public class TestRESTViewCatalog extends ViewCatalogTests<RESTCatalog> {
       httpServer.stop();
       httpServer.join();
     }
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {21, 30})
+  public void testPaginationForListViews(int numberOfItems) {
+    RESTCatalogAdapter adapter = Mockito.spy(new RESTCatalogAdapter(backendCatalog));
+    RESTCatalog catalog =
+        new RESTCatalog(SessionCatalog.SessionContext.createEmpty(), (config) -> adapter);
+    catalog.initialize("test", ImmutableMap.of(RESTSessionCatalog.REST_PAGE_SIZE, "10"));
+
+    String namespaceName = "newdb";
+    String viewName = "newview";
+
+    // create initial namespace
+    catalog().createNamespace(Namespace.of(namespaceName));
+
+    // create several views under namespace, based off a table for listing and verify
+    for (int i = 0; i < numberOfItems; i++) {
+      TableIdentifier viewIndentifier = TableIdentifier.of(namespaceName, viewName + i);
+      catalog
+          .buildView(viewIndentifier)
+          .withSchema(SCHEMA)
+          .withDefaultNamespace(viewIndentifier.namespace())
+          .withQuery("spark", "select * from ns.tbl")
+          .create();
+    }
+    List<TableIdentifier> views = catalog.listViews(Namespace.of(namespaceName));
+    assertThat(views).hasSize(numberOfItems);
+
+    Mockito.verify(adapter)
+        .execute(
+            eq(HTTPMethod.GET),
+            eq("v1/config"),
+            any(),
+            any(),
+            eq(ConfigResponse.class),
+            any(),
+            any());
+
+    Mockito.verify(adapter, times(numberOfItems))
+        .execute(
+            eq(HTTPMethod.POST),
+            eq(String.format("v1/namespaces/%s/views", namespaceName)),
+            any(),
+            any(),
+            eq(LoadViewResponse.class),
+            any(),
+            any());
+
+    // verify initial request with empty pageToken
+    Mockito.verify(adapter)
+        .handleRequest(
+            eq(RESTCatalogAdapter.Route.LIST_VIEWS),
+            eq(ImmutableMap.of("pageToken", "", "pageSize", "10", "namespace", namespaceName)),
+            any(),
+            eq(ListTablesResponse.class));
+
+    // verify second request with update pageToken
+    Mockito.verify(adapter)
+        .handleRequest(
+            eq(RESTCatalogAdapter.Route.LIST_VIEWS),
+            eq(ImmutableMap.of("pageToken", "10", "pageSize", "10", "namespace", namespaceName)),
+            any(),
+            eq(ListTablesResponse.class));
+
+    // verify third request with update pageToken
+    Mockito.verify(adapter)
+        .handleRequest(
+            eq(RESTCatalogAdapter.Route.LIST_VIEWS),
+            eq(ImmutableMap.of("pageToken", "20", "pageSize", "10", "namespace", namespaceName)),
+            any(),
+            eq(ListTablesResponse.class));
+  }
+
+  @Test
+  public void viewExistsViaHEADRequest() {
+    RESTCatalogAdapter adapter = Mockito.spy(new RESTCatalogAdapter(backendCatalog));
+    RESTCatalog catalog =
+        new RESTCatalog(SessionCatalog.SessionContext.createEmpty(), (config) -> adapter);
+    catalog.initialize("test", ImmutableMap.of());
+
+    catalog.createNamespace(Namespace.of("ns"));
+
+    assertThat(catalog.viewExists(TableIdentifier.of("ns", "view"))).isFalse();
+
+    Mockito.verify(adapter)
+        .execute(
+            eq(HTTPMethod.GET),
+            eq("v1/config"),
+            any(),
+            any(),
+            eq(ConfigResponse.class),
+            any(),
+            any());
+    Mockito.verify(adapter)
+        .execute(
+            eq(HTTPMethod.HEAD),
+            eq("v1/namespaces/ns/views/view"),
+            any(),
+            any(),
+            any(),
+            any(),
+            any());
   }
 
   @Override

@@ -19,10 +19,10 @@
 package org.apache.iceberg.spark.extensions;
 
 import static org.apache.iceberg.TableProperties.WRITE_AUDIT_PUBLISH_ENABLED;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.Map;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.exceptions.ValidationException;
@@ -31,8 +31,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.spark.sql.AnalysisException;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.catalyst.analysis.NoSuchProcedureException;
+import org.apache.spark.sql.catalyst.parser.ParseException;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Test;
 
 public class TestPublishChangesProcedure extends SparkExtensionsTestBase {
@@ -157,37 +158,40 @@ public class TestPublishChangesProcedure extends SparkExtensionsTestBase {
   public void testApplyInvalidWapId() {
     sql("CREATE TABLE %s (id bigint NOT NULL, data string) USING iceberg", tableName);
 
-    AssertHelpers.assertThrows(
-        "Should reject invalid wap id",
-        ValidationException.class,
-        "Cannot apply unknown WAP ID",
-        () -> sql("CALL %s.system.publish_changes('%s', 'not_valid')", catalogName, tableIdent));
+    assertThatThrownBy(
+            () -> sql("CALL %s.system.publish_changes('%s', 'not_valid')", catalogName, tableIdent))
+        .as("Should reject invalid wap id")
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("Cannot apply unknown WAP ID");
   }
 
   @Test
   public void testInvalidApplyWapChangesCases() {
-    AssertHelpers.assertThrows(
-        "Should not allow mixed args",
-        AnalysisException.class,
-        "Named and positional arguments cannot be mixed",
-        () -> sql("CALL %s.system.publish_changes('n', table => 't', 'not_valid')", catalogName));
+    assertThatThrownBy(
+            () ->
+                sql("CALL %s.system.publish_changes('n', table => 't', 'not_valid')", catalogName))
+        .as("Should not allow mixed args")
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageContaining("Named and positional arguments cannot be mixed");
 
-    AssertHelpers.assertThrows(
-        "Should not resolve procedures in arbitrary namespaces",
-        NoSuchProcedureException.class,
-        "not found",
-        () -> sql("CALL %s.custom.publish_changes('n', 't', 'not_valid')", catalogName));
+    assertThatThrownBy(
+            () -> sql("CALL %s.custom.publish_changes('n', 't', 'not_valid')", catalogName))
+        .as("Should not resolve procedures in arbitrary namespaces")
+        .satisfies(
+            exception -> {
+              ParseException parseException = (ParseException) exception;
+              Assert.assertEquals("PARSE_SYNTAX_ERROR", parseException.getErrorClass());
+              Assert.assertEquals("Syntax error at or near 'CALL'", parseException.message());
+            });
 
-    AssertHelpers.assertThrows(
-        "Should reject calls without all required args",
-        AnalysisException.class,
-        "Missing required parameters",
-        () -> sql("CALL %s.system.publish_changes('t')", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.publish_changes('t')", catalogName))
+        .as("Should reject calls without all required args")
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageContaining("Missing required parameters");
 
-    AssertHelpers.assertThrows(
-        "Should reject calls with empty table identifier",
-        IllegalArgumentException.class,
-        "Cannot handle an empty identifier",
-        () -> sql("CALL %s.system.publish_changes('', 'not_valid')", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.publish_changes('', 'not_valid')", catalogName))
+        .as("Should reject calls with empty table identifier")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot handle an empty identifier");
   }
 }

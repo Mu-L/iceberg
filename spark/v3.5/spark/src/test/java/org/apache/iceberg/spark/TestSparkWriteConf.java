@@ -47,9 +47,11 @@ import static org.apache.spark.sql.connector.write.RowLevelOperation.Command.UPD
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.DistributionMode;
+import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.UpdateProperties;
@@ -79,12 +81,69 @@ public class TestSparkWriteConf extends TestBaseWithCatalog {
   }
 
   @TestTemplate
+  public void testOptionCaseInsensitive() {
+    Table table = validationCatalog.loadTable(tableIdent);
+    Map<String, String> options = ImmutableMap.of("option", "value");
+    SparkConfParser parser = new SparkConfParser(spark, table, options);
+    String parsedValue = parser.stringConf().option("oPtIoN").parseOptional();
+    assertThat(parsedValue).isEqualTo("value");
+  }
+
+  @TestTemplate
+  public void testCamelCaseSparkSessionConf() {
+    Table table = validationCatalog.loadTable(tableIdent);
+    String confName = "spark.sql.iceberg.some-int-conf";
+    String sparkConfName = "spark.sql.iceberg.someIntConf";
+
+    withSQLConf(
+        ImmutableMap.of(sparkConfName, "1"),
+        () -> {
+          SparkConfParser parser = new SparkConfParser(spark, table, ImmutableMap.of());
+          Integer value = parser.intConf().sessionConf(confName).parseOptional();
+          assertThat(value).isEqualTo(1);
+        });
+  }
+
+  @TestTemplate
+  public void testCamelCaseSparkOption() {
+    Table table = validationCatalog.loadTable(tableIdent);
+    String option = "some-int-option";
+    String sparkOption = "someIntOption";
+    Map<String, String> options = ImmutableMap.of(sparkOption, "1");
+    SparkConfParser parser = new SparkConfParser(spark, table, options);
+    Integer value = parser.intConf().option(option).parseOptional();
+    assertThat(value).isEqualTo(1);
+  }
+
+  @TestTemplate
+  public void testDurationConf() {
+    Table table = validationCatalog.loadTable(tableIdent);
+    String confName = "spark.sql.iceberg.some-duration-conf";
+
+    withSQLConf(
+        ImmutableMap.of(confName, "10s"),
+        () -> {
+          SparkConfParser parser = new SparkConfParser(spark, table, ImmutableMap.of());
+          Duration duration = parser.durationConf().sessionConf(confName).parseOptional();
+          assertThat(duration).hasSeconds(10);
+        });
+
+    withSQLConf(
+        ImmutableMap.of(confName, "2m"),
+        () -> {
+          SparkConfParser parser = new SparkConfParser(spark, table, ImmutableMap.of());
+          Duration duration = parser.durationConf().sessionConf(confName).parseOptional();
+          assertThat(duration).hasMinutes(2);
+        });
+  }
+
+  @TestTemplate
   public void testDeleteGranularityDefault() {
     Table table = validationCatalog.loadTable(tableIdent);
     SparkWriteConf writeConf = new SparkWriteConf(spark, table, ImmutableMap.of());
 
     DeleteGranularity value = writeConf.deleteGranularity();
-    assertThat(value).isEqualTo(DeleteGranularity.PARTITION);
+    assertThat(value).isEqualTo(DeleteGranularity.FILE);
   }
 
   @TestTemplate
@@ -93,13 +152,13 @@ public class TestSparkWriteConf extends TestBaseWithCatalog {
 
     table
         .updateProperties()
-        .set(TableProperties.DELETE_GRANULARITY, DeleteGranularity.FILE.toString())
+        .set(TableProperties.DELETE_GRANULARITY, DeleteGranularity.PARTITION.toString())
         .commit();
 
     SparkWriteConf writeConf = new SparkWriteConf(spark, table, ImmutableMap.of());
 
     DeleteGranularity value = writeConf.deleteGranularity();
-    assertThat(value).isEqualTo(DeleteGranularity.FILE);
+    assertThat(value).isEqualTo(DeleteGranularity.PARTITION);
   }
 
   @TestTemplate
@@ -480,6 +539,14 @@ public class TestSparkWriteConf extends TestBaseWithCatalog {
     for (List<Map<String, String>> propertiesSuite : propertiesSuites) {
       testWriteProperties(propertiesSuite);
     }
+  }
+
+  @TestTemplate
+  public void testDVWriteConf() {
+    Table table = validationCatalog.loadTable(tableIdent);
+    table.updateProperties().set(TableProperties.FORMAT_VERSION, "3").commit();
+    SparkWriteConf writeConf = new SparkWriteConf(spark, table, ImmutableMap.of());
+    assertThat(writeConf.deleteFileFormat()).isEqualTo(FileFormat.PUFFIN);
   }
 
   private void testWriteProperties(List<Map<String, String>> propertiesSuite) {

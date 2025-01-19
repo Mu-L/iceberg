@@ -50,7 +50,7 @@ import org.projectnessie.model.Branch;
 import org.projectnessie.model.Reference;
 import org.projectnessie.model.Tag;
 import org.projectnessie.versioned.storage.common.persist.Persist;
-import org.projectnessie.versioned.storage.inmemory.InmemoryBackendTestFactory;
+import org.projectnessie.versioned.storage.inmemorytests.InmemoryBackendTestFactory;
 import org.projectnessie.versioned.storage.testextension.NessieBackend;
 import org.projectnessie.versioned.storage.testextension.NessiePersist;
 import org.projectnessie.versioned.storage.testextension.PersistExtension;
@@ -128,7 +128,11 @@ public class TestNessieViewCatalog extends ViewCatalogTests<NessieCatalog> {
             CatalogProperties.WAREHOUSE_LOCATION,
             temp.toUri().toString(),
             "client-api-version",
-            apiVersion == NessieApiVersion.V2 ? "2" : "1");
+            apiVersion == NessieApiVersion.V2 ? "2" : "1",
+            CatalogProperties.VIEW_DEFAULT_PREFIX + "key1",
+            "catalog-default-key1",
+            CatalogProperties.VIEW_DEFAULT_PREFIX + "key2",
+            "catalog-default-key2");
     newCatalog.initialize("nessie", options);
     return newCatalog;
   }

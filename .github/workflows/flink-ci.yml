@@ -22,23 +22,34 @@ on:
   push:
     branches:
     - 'main'
-    - '0.**'
+    - '0.*'
+    - '1.*'
+    - '2.*'
     tags:
     - 'apache-iceberg-**'
   pull_request:
     paths-ignore:
     - '.github/ISSUE_TEMPLATE/**'
-    - '.github/workflows/spark-ci.yml'
+    - '.github/workflows/api-binary-compatibility.yml'
+    - '.github/workflows/delta-conversion-ci.yml'
     - '.github/workflows/hive-ci.yml'
+    - '.github/workflows/java-ci.yml'
+    - '.github/workflows/jmh-benchmarks-ci.yml'
+    - '.github/workflows/kafka-connect-ci.yml'
+    - '.github/workflows/labeler.yml'
+    - '.github/workflows/license-check.yml'
+    - '.github/workflows/open-api.yml'
+    - '.github/workflows/publish-snapshot.yml'
+    - '.github/workflows/recurring-jmh-benchmarks.yml'
+    - '.github/workflows/site-ci.yml'
+    - '.github/workflows/spark-ci.yml'
+    - '.github/workflows/stale.yml'
     - '.gitignore'
-    - '.asf.yml'
+    - '.asf.yaml'
     - 'dev/**'
     - 'mr/**'
-    - 'hive3/**'
-    - 'hive3-orc-bundle/**'
-    - 'hive-runtime/**'
+    - 'kafka-connect/**'
     - 'spark/**'
-    - 'pig/**'
     - 'docs/**'
     - 'site/**'
     - 'open-api/**'
@@ -60,8 +71,8 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        jvm: [8, 11]
-        flink: ['1.16', '1.17', '1.18']
+        jvm: [11, 17, 21]
+        flink: ['1.18', '1.19', '1.20']
     env:
       SPARK_LOCAL_IP: localhost
     steps:
@@ -70,7 +81,7 @@ jobs:
       with:
         distribution: zulu
         java-version: ${{ matrix.jvm }}
-    - uses: actions/cache@v3
+    - uses: actions/cache@v4
       with:
         path: |
           ~/.gradle/caches
@@ -78,8 +89,8 @@ jobs:
         key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
         restore-keys: ${{ runner.os }}-gradle-
     - run: echo -e "$(ip addr show eth0 | grep "inet\b" | awk '{print $2}' | cut -d/ -f1)\t$(hostname -f) $(hostname -s)" | sudo tee -a /etc/hosts
-    - run: ./gradlew -DsparkVersions= -DhiveVersions= -DflinkVersions=${{ matrix.flink }} :iceberg-flink:iceberg-flink-${{ matrix.flink }}:check :iceberg-flink:iceberg-flink-runtime-${{ matrix.flink }}:check -Pquick=true -x javadoc
-    - uses: actions/upload-artifact@v3
+    - run: ./gradlew -DsparkVersions= -DkafkaVersions= -DflinkVersions=${{ matrix.flink }} :iceberg-flink:iceberg-flink-${{ matrix.flink }}:check :iceberg-flink:iceberg-flink-runtime-${{ matrix.flink }}:check -Pquick=true -x javadoc
+    - uses: actions/upload-artifact@v4
       if: failure()
       with:
         name: test logs

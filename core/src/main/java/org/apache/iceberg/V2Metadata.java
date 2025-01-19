@@ -40,14 +40,15 @@ class V2Metadata {
           ManifestFile.MANIFEST_CONTENT.asRequired(),
           ManifestFile.SEQUENCE_NUMBER.asRequired(),
           ManifestFile.MIN_SEQUENCE_NUMBER.asRequired(),
-          ManifestFile.SNAPSHOT_ID.asRequired(),
+          ManifestFile.SNAPSHOT_ID,
           ManifestFile.ADDED_FILES_COUNT.asRequired(),
           ManifestFile.EXISTING_FILES_COUNT.asRequired(),
           ManifestFile.DELETED_FILES_COUNT.asRequired(),
           ManifestFile.ADDED_ROWS_COUNT.asRequired(),
           ManifestFile.EXISTING_ROWS_COUNT.asRequired(),
           ManifestFile.DELETED_ROWS_COUNT.asRequired(),
-          ManifestFile.PARTITION_SUMMARIES);
+          ManifestFile.PARTITION_SUMMARIES,
+          ManifestFile.KEY_METADATA);
 
   /**
    * A wrapper class to write any ManifestFile implementation to Avro using the v2 write schema.
@@ -273,7 +274,8 @@ class V2Metadata {
         DataFile.KEY_METADATA,
         DataFile.SPLIT_OFFSETS,
         DataFile.EQUALITY_IDS,
-        DataFile.SORT_ORDER_ID);
+        DataFile.SORT_ORDER_ID,
+        DataFile.REFERENCED_DATA_FILE);
   }
 
   static class IndexedManifestEntry<F extends ContentFile<F>>
@@ -418,7 +420,7 @@ class V2Metadata {
         case 0:
           return wrapped.content().id();
         case 1:
-          return wrapped.path().toString();
+          return wrapped.location();
         case 2:
           return wrapped.format() != null ? wrapped.format().toString() : null;
         case 3:
@@ -447,6 +449,12 @@ class V2Metadata {
           return wrapped.equalityFieldIds();
         case 15:
           return wrapped.sortOrderId();
+        case 16:
+          if (wrapped instanceof DeleteFile) {
+            return ((DeleteFile) wrapped).referencedDataFile();
+          } else {
+            return null;
+          }
       }
       throw new IllegalArgumentException("Unknown field ordinal: " + pos);
     }
@@ -462,6 +470,11 @@ class V2Metadata {
     }
 
     @Override
+    public String manifestLocation() {
+      return null;
+    }
+
+    @Override
     public int specId() {
       return wrapped.specId();
     }
@@ -473,7 +486,7 @@ class V2Metadata {
 
     @Override
     public CharSequence path() {
-      return wrapped.path();
+      return wrapped.location();
     }
 
     @Override

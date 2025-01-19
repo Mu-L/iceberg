@@ -42,6 +42,7 @@ import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.exceptions.NoSuchViewException;
+import org.apache.iceberg.io.CloseableGroup;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.base.Objects;
@@ -68,6 +69,8 @@ public class InMemoryCatalog extends BaseMetastoreViewCatalog
   private FileIO io;
   private String catalogName;
   private String warehouseLocation;
+  private CloseableGroup closeableGroup;
+  private Map<String, String> catalogProperties;
 
   public InMemoryCatalog() {
     this.namespaces = Maps.newConcurrentMap();
@@ -83,10 +86,14 @@ public class InMemoryCatalog extends BaseMetastoreViewCatalog
   @Override
   public void initialize(String name, Map<String, String> properties) {
     this.catalogName = name != null ? name : InMemoryCatalog.class.getSimpleName();
+    this.catalogProperties = ImmutableMap.copyOf(properties);
 
     String warehouse = properties.getOrDefault(CatalogProperties.WAREHOUSE_LOCATION, "");
     this.warehouseLocation = warehouse.replaceAll("/*$", "");
     this.io = new InMemoryFileIO();
+    this.closeableGroup = new CloseableGroup();
+    closeableGroup.addCloseable(metricsReporter());
+    closeableGroup.setSuppressCloseFailure(true);
   }
 
   @Override
@@ -139,7 +146,7 @@ public class InMemoryCatalog extends BaseMetastoreViewCatalog
     }
 
     return tables.keySet().stream()
-        .filter(t -> namespace.isEmpty() || t.namespace().equals(namespace))
+        .filter(t -> t.namespace().equals(namespace))
         .sorted(Comparator.comparing(TableIdentifier::toString))
         .collect(Collectors.toList());
   }
@@ -283,6 +290,7 @@ public class InMemoryCatalog extends BaseMetastoreViewCatalog
 
     List<Namespace> filteredNamespaces =
         namespaces.keySet().stream()
+            .filter(n -> !n.isEmpty())
             .filter(n -> DOT.join(n.levels()).startsWith(searchNamespaceString))
             .collect(Collectors.toList());
 
@@ -302,6 +310,7 @@ public class InMemoryCatalog extends BaseMetastoreViewCatalog
 
   @Override
   public void close() throws IOException {
+    closeableGroup.close();
     namespaces.clear();
     tables.clear();
     views.clear();
@@ -315,7 +324,7 @@ public class InMemoryCatalog extends BaseMetastoreViewCatalog
     }
 
     return views.keySet().stream()
-        .filter(v -> namespace.isEmpty() || v.namespace().equals(namespace))
+        .filter(v -> v.namespace().equals(namespace))
         .sorted(Comparator.comparing(TableIdentifier::toString))
         .collect(Collectors.toList());
   }
@@ -360,6 +369,11 @@ public class InMemoryCatalog extends BaseMetastoreViewCatalog
       views.put(to, fromViewLocation);
       views.remove(from);
     }
+  }
+
+  @Override
+  protected Map<String, String> properties() {
+    return catalogProperties == null ? ImmutableMap.of() : catalogProperties;
   }
 
   private class InMemoryTableOperations extends BaseMetastoreTableOperations {

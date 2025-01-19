@@ -38,8 +38,7 @@ import org.apache.iceberg.transforms.Transforms;
  * the metadata table using a {@link StaticTableOperations}. This way no Catalog related calls are
  * needed when reading the table data after deserialization.
  */
-public abstract class BaseMetadataTable extends BaseReadOnlyTable
-    implements HasTableOperations, Serializable {
+public abstract class BaseMetadataTable extends BaseReadOnlyTable implements Serializable {
   private final PartitionSpec spec = PartitionSpec.unpartitioned();
   private final SortOrder sortOrder = SortOrder.unsorted();
   private final BaseTable table;
@@ -75,8 +74,11 @@ public abstract class BaseMetadataTable extends BaseReadOnlyTable
             .withSpecId(spec.specId())
             .checkConflicts(false);
 
+    Map<Integer, Integer> reassignedFields = metadataTableSchema.idsToReassigned();
+
     for (PartitionField field : spec.fields()) {
-      builder.add(field.fieldId(), field.fieldId(), field.name(), Transforms.identity());
+      int newFieldId = reassignedFields.getOrDefault(field.fieldId(), field.fieldId());
+      builder.add(newFieldId, newFieldId, field.name(), Transforms.identity());
     }
     return builder.build();
   }
@@ -101,15 +103,8 @@ public abstract class BaseMetadataTable extends BaseReadOnlyTable
 
   abstract MetadataTableType metadataTableType();
 
-  protected BaseTable table() {
+  public BaseTable table() {
     return table;
-  }
-
-  /** @deprecated will be removed in 1.4.0; do not use metadata table TableOperations */
-  @Override
-  @Deprecated
-  public TableOperations operations() {
-    return table.operations();
   }
 
   @Override

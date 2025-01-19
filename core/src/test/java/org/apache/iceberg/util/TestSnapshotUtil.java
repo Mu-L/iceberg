@@ -35,7 +35,6 @@ import org.apache.iceberg.SnapshotRef;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.TestTables;
 import org.apache.iceberg.types.Types;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -81,8 +80,6 @@ public class TestSnapshotUtil {
 
   @BeforeEach
   public void before() throws Exception {
-    tableDir.delete(); // created by table create
-
     this.metadataDir = new File(tableDir, "metadata");
 
     this.table = TestTables.create(tableDir, "test", SCHEMA, SPEC, 2);
@@ -178,7 +175,7 @@ public class TestSnapshotUtil {
     }
 
     // Once snapshot iterator has been exhausted, call hasNext again to make sure it is stable.
-    Assertions.assertThat(snapshotIter).isExhausted();
+    assertThat(snapshotIter).isExhausted();
   }
 
   private void expectedSnapshots(long[] snapshotIdExpected, Iterable<Snapshot> snapshotsActual) {

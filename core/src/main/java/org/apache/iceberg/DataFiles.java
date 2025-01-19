@@ -186,7 +186,7 @@ public class DataFiles {
             specId == toCopy.specId(), "Cannot copy a DataFile with a different spec");
         this.partitionData = copyPartitionData(spec, toCopy.partition(), partitionData);
       }
-      this.filePath = toCopy.path().toString();
+      this.filePath = toCopy.location();
       this.format = toCopy.format();
       this.recordCount = toCopy.recordCount();
       this.fileSizeInBytes = toCopy.fileSizeInBytes();
@@ -297,12 +297,6 @@ public class DataFiles {
         this.splitOffsets = null;
       }
       return this;
-    }
-
-    /** @deprecated since 1.5.0, will be removed in 1.6.0; must not be set for data files. */
-    @Deprecated
-    public Builder withEqualityFieldIds(List<Integer> equalityIds) {
-      throw new UnsupportedOperationException("Equality field IDs must not be set for data files");
     }
 
     public Builder withEncryptionKeyMetadata(ByteBuffer newKeyMetadata) {

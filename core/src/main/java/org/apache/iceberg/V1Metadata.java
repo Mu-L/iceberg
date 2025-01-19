@@ -43,7 +43,8 @@ class V1Metadata {
           ManifestFile.PARTITION_SUMMARIES,
           ManifestFile.ADDED_ROWS_COUNT,
           ManifestFile.EXISTING_ROWS_COUNT,
-          ManifestFile.DELETED_ROWS_COUNT);
+          ManifestFile.DELETED_ROWS_COUNT,
+          ManifestFile.KEY_METADATA);
 
   /**
    * A wrapper class to write any ManifestFile implementation to Avro using the v1 schema.
@@ -97,6 +98,8 @@ class V1Metadata {
           return existingRowsCount();
         case 10:
           return deletedRowsCount();
+        case 11:
+          return keyMetadata();
         default:
           throw new UnsupportedOperationException("Unknown field ordinal: " + pos);
       }
@@ -185,6 +188,11 @@ class V1Metadata {
     @Override
     public List<PartitionFieldSummary> partitions() {
       return wrapped.partitions();
+    }
+
+    @Override
+    public ByteBuffer keyMetadata() {
+      return wrapped.keyMetadata();
     }
 
     @Override
@@ -343,7 +351,7 @@ class V1Metadata {
     public Object get(int pos) {
       switch (pos) {
         case 0:
-          return wrapped.path().toString();
+          return wrapped.location();
         case 1:
           return wrapped.format() != null ? wrapped.format().toString() : null;
         case 2:
@@ -392,6 +400,11 @@ class V1Metadata {
     }
 
     @Override
+    public String manifestLocation() {
+      return null;
+    }
+
+    @Override
     public int specId() {
       return wrapped.specId();
     }
@@ -403,7 +416,7 @@ class V1Metadata {
 
     @Override
     public CharSequence path() {
-      return wrapped.path();
+      return wrapped.location();
     }
 
     @Override

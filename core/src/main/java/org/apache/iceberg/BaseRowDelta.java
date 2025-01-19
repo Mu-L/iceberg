@@ -43,6 +43,10 @@ class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements RowDelta
 
   @Override
   protected String operation() {
+    if (addsDeleteFiles() && !addsDataFiles()) {
+      return DataOperations.DELETE;
+    }
+
     return DataOperations.OVERWRITE;
   }
 
@@ -55,6 +59,12 @@ class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements RowDelta
   @Override
   public RowDelta addDeletes(DeleteFile deletes) {
     add(deletes);
+    return this;
+  }
+
+  @Override
+  public RowDelta removeDeletes(DeleteFile deletes) {
+    delete(deletes);
     return this;
   }
 
@@ -129,6 +139,8 @@ class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements RowDelta
       if (validateNewDeleteFiles) {
         validateNoNewDeleteFiles(base, startingSnapshotId, conflictDetectionFilter, parent);
       }
+
+      validateAddedDVs(base, startingSnapshotId, conflictDetectionFilter, parent);
     }
   }
 }

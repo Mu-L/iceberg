@@ -31,7 +31,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 import org.apache.iceberg.AllManifestsTable;
 import org.apache.iceberg.BaseTable;
@@ -44,7 +43,6 @@ import org.apache.iceberg.MetadataTableType;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.ReachableFileUtil;
 import org.apache.iceberg.StaticTableOperations;
-import org.apache.iceberg.StatisticsFile;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.exceptions.NotFoundException;
@@ -141,6 +139,11 @@ abstract class BaseSparkAction<ThisT> {
     return new BaseTable(ops, metadata.metadataFileLocation());
   }
 
+  protected Table newStaticTable(String metadataFileLocation, FileIO io) {
+    StaticTableOperations ops = new StaticTableOperations(metadataFileLocation, io);
+    return new BaseTable(ops, metadataFileLocation);
+  }
+
   protected Dataset<FileInfo> contentFileDS(Table table) {
     return contentFileDS(table, null);
   }
@@ -196,14 +199,8 @@ abstract class BaseSparkAction<ThisT> {
   }
 
   protected Dataset<FileInfo> statisticsFileDS(Table table, Set<Long> snapshotIds) {
-    Predicate<StatisticsFile> predicate;
-    if (snapshotIds == null) {
-      predicate = statisticsFile -> true;
-    } else {
-      predicate = statisticsFile -> snapshotIds.contains(statisticsFile.snapshotId());
-    }
-
-    List<String> statisticsFiles = ReachableFileUtil.statisticsFilesLocations(table, predicate);
+    List<String> statisticsFiles =
+        ReachableFileUtil.statisticsFilesLocationsForSnapshots(table, snapshotIds);
     return toFileInfoDS(statisticsFiles, STATISTICS_FILES);
   }
 
@@ -440,7 +437,7 @@ abstract class BaseSparkAction<ThisT> {
     }
 
     static FileInfo toFileInfo(ContentFile<?> file) {
-      return new FileInfo(file.path().toString(), file.content().toString());
+      return new FileInfo(file.location(), file.content().toString());
     }
   }
 }

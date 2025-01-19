@@ -33,6 +33,7 @@ import org.apache.iceberg.PartitionKey;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.deletes.DeleteGranularity;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.hadoop.HadoopTables;
@@ -43,8 +44,6 @@ import org.apache.iceberg.io.FanoutDataWriter;
 import org.apache.iceberg.io.FanoutPositionOnlyDeleteWriter;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFileFactory;
-import org.apache.iceberg.io.TaskWriter;
-import org.apache.iceberg.io.UnpartitionedWriter;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -177,33 +176,6 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
   @Benchmark
   @Threads(1)
-  public void writeUnpartitionedLegacyDataWriter(Blackhole blackhole) throws IOException {
-    FileIO io = table().io();
-
-    OutputFileFactory fileFactory = newFileFactory();
-
-    Schema writeSchema = table().schema();
-    StructType sparkWriteType = SparkSchemaUtil.convert(writeSchema);
-    SparkAppenderFactory appenders =
-        SparkAppenderFactory.builderFor(table(), writeSchema, sparkWriteType)
-            .spec(unpartitionedSpec)
-            .build();
-
-    TaskWriter<InternalRow> writer =
-        new UnpartitionedWriter<>(
-            unpartitionedSpec, fileFormat(), appenders, fileFactory, io, TARGET_FILE_SIZE_IN_BYTES);
-
-    try (TaskWriter<InternalRow> closableWriter = writer) {
-      for (InternalRow row : rows) {
-        closableWriter.write(row);
-      }
-    }
-
-    blackhole.consume(writer.complete());
-  }
-
-  @Benchmark
-  @Threads(1)
   public void writePartitionedClusteredDataWriter(Blackhole blackhole) throws IOException {
     FileIO io = table().io();
 
@@ -219,7 +191,8 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
     PartitionKey partitionKey = new PartitionKey(partitionedSpec, table().schema());
     StructType dataSparkType = SparkSchemaUtil.convert(table().schema());
-    InternalRowWrapper internalRowWrapper = new InternalRowWrapper(dataSparkType);
+    InternalRowWrapper internalRowWrapper =
+        new InternalRowWrapper(dataSparkType, table().schema().asStruct());
 
     try (ClusteredDataWriter<InternalRow> closeableWriter = writer) {
       for (InternalRow row : rows) {
@@ -229,40 +202,6 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
     }
 
     blackhole.consume(writer);
-  }
-
-  @Benchmark
-  @Threads(1)
-  public void writePartitionedLegacyDataWriter(Blackhole blackhole) throws IOException {
-    FileIO io = table().io();
-
-    OutputFileFactory fileFactory = newFileFactory();
-
-    Schema writeSchema = table().schema();
-    StructType sparkWriteType = SparkSchemaUtil.convert(writeSchema);
-    SparkAppenderFactory appenders =
-        SparkAppenderFactory.builderFor(table(), writeSchema, sparkWriteType)
-            .spec(partitionedSpec)
-            .build();
-
-    TaskWriter<InternalRow> writer =
-        new SparkPartitionedWriter(
-            partitionedSpec,
-            fileFormat(),
-            appenders,
-            fileFactory,
-            io,
-            TARGET_FILE_SIZE_IN_BYTES,
-            writeSchema,
-            sparkWriteType);
-
-    try (TaskWriter<InternalRow> closableWriter = writer) {
-      for (InternalRow row : rows) {
-        closableWriter.write(row);
-      }
-    }
-
-    blackhole.consume(writer.complete());
   }
 
   @Benchmark
@@ -282,7 +221,8 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
     PartitionKey partitionKey = new PartitionKey(partitionedSpec, table().schema());
     StructType dataSparkType = SparkSchemaUtil.convert(table().schema());
-    InternalRowWrapper internalRowWrapper = new InternalRowWrapper(dataSparkType);
+    InternalRowWrapper internalRowWrapper =
+        new InternalRowWrapper(dataSparkType, table().schema().asStruct());
 
     try (FanoutDataWriter<InternalRow> closeableWriter = writer) {
       for (InternalRow row : rows) {
@@ -292,40 +232,6 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
     }
 
     blackhole.consume(writer);
-  }
-
-  @Benchmark
-  @Threads(1)
-  public void writePartitionedLegacyFanoutDataWriter(Blackhole blackhole) throws IOException {
-    FileIO io = table().io();
-
-    OutputFileFactory fileFactory = newFileFactory();
-
-    Schema writeSchema = table().schema();
-    StructType sparkWriteType = SparkSchemaUtil.convert(writeSchema);
-    SparkAppenderFactory appenders =
-        SparkAppenderFactory.builderFor(table(), writeSchema, sparkWriteType)
-            .spec(partitionedSpec)
-            .build();
-
-    TaskWriter<InternalRow> writer =
-        new SparkPartitionedFanoutWriter(
-            partitionedSpec,
-            fileFormat(),
-            appenders,
-            fileFactory,
-            io,
-            TARGET_FILE_SIZE_IN_BYTES,
-            writeSchema,
-            sparkWriteType);
-
-    try (TaskWriter<InternalRow> closableWriter = writer) {
-      for (InternalRow row : rows) {
-        closableWriter.write(row);
-      }
-    }
-
-    blackhole.consume(writer.complete());
   }
 
   @Benchmark
@@ -350,7 +256,8 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
     PartitionKey partitionKey = new PartitionKey(partitionedSpec, table().schema());
     StructType deleteSparkType = SparkSchemaUtil.convert(table().schema());
-    InternalRowWrapper internalRowWrapper = new InternalRowWrapper(deleteSparkType);
+    InternalRowWrapper internalRowWrapper =
+        new InternalRowWrapper(deleteSparkType, table().schema().asStruct());
 
     try (ClusteredEqualityDeleteWriter<InternalRow> closeableWriter = writer) {
       for (InternalRow row : rows) {
@@ -364,8 +271,20 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
   @Benchmark
   @Threads(1)
-  public void writeUnpartitionedClusteredPositionDeleteWriter(Blackhole blackhole)
+  public void writeUnpartitionedClusteredPositionDeleteWriterPartitionGranularity(
+      Blackhole blackhole) throws IOException {
+    writeUnpartitionedClusteredPositionDeleteWriter(blackhole, DeleteGranularity.PARTITION);
+  }
+
+  @Benchmark
+  @Threads(1)
+  public void writeUnpartitionedClusteredPositionDeleteWriterFileGranularity(Blackhole blackhole)
       throws IOException {
+    writeUnpartitionedClusteredPositionDeleteWriter(blackhole, DeleteGranularity.FILE);
+  }
+
+  private void writeUnpartitionedClusteredPositionDeleteWriter(
+      Blackhole blackhole, DeleteGranularity deleteGranularity) throws IOException {
     FileIO io = table().io();
 
     OutputFileFactory fileFactory = newFileFactory();
@@ -374,7 +293,7 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
     ClusteredPositionDeleteWriter<InternalRow> writer =
         new ClusteredPositionDeleteWriter<>(
-            writerFactory, fileFactory, io, TARGET_FILE_SIZE_IN_BYTES);
+            writerFactory, fileFactory, io, TARGET_FILE_SIZE_IN_BYTES, deleteGranularity);
 
     PositionDelete<InternalRow> positionDelete = PositionDelete.create();
     try (ClusteredPositionDeleteWriter<InternalRow> closeableWriter = writer) {
@@ -391,7 +310,20 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
   @Benchmark
   @Threads(1)
-  public void writeUnpartitionedFanoutPositionDeleteWriter(Blackhole blackhole) throws IOException {
+  public void writeUnpartitionedFanoutPositionDeleteWriterPartitionGranularity(Blackhole blackhole)
+      throws IOException {
+    writeUnpartitionedFanoutPositionDeleteWriterPartition(blackhole, DeleteGranularity.PARTITION);
+  }
+
+  @Benchmark
+  @Threads(1)
+  public void writeUnpartitionedFanoutPositionDeleteWriterFileGranularity(Blackhole blackhole)
+      throws IOException {
+    writeUnpartitionedFanoutPositionDeleteWriterPartition(blackhole, DeleteGranularity.FILE);
+  }
+
+  private void writeUnpartitionedFanoutPositionDeleteWriterPartition(
+      Blackhole blackhole, DeleteGranularity deleteGranularity) throws IOException {
     FileIO io = table().io();
 
     OutputFileFactory fileFactory = newFileFactory();
@@ -400,7 +332,7 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
     FanoutPositionOnlyDeleteWriter<InternalRow> writer =
         new FanoutPositionOnlyDeleteWriter<>(
-            writerFactory, fileFactory, io, TARGET_FILE_SIZE_IN_BYTES);
+            writerFactory, fileFactory, io, TARGET_FILE_SIZE_IN_BYTES, deleteGranularity);
 
     PositionDelete<InternalRow> positionDelete = PositionDelete.create();
     try (FanoutPositionOnlyDeleteWriter<InternalRow> closeableWriter = writer) {
@@ -417,8 +349,20 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
   @Benchmark
   @Threads(1)
-  public void writeUnpartitionedFanoutPositionDeleteWriterShuffled(Blackhole blackhole)
-      throws IOException {
+  public void writeUnpartitionedFanoutPositionDeleteWriterShuffledPartitionGranularity(
+      Blackhole blackhole) throws IOException {
+    writeUnpartitionedFanoutPositionDeleteWriterShuffled(blackhole, DeleteGranularity.PARTITION);
+  }
+
+  @Benchmark
+  @Threads(1)
+  public void writeUnpartitionedFanoutPositionDeleteWriterShuffledFileGranularity(
+      Blackhole blackhole) throws IOException {
+    writeUnpartitionedFanoutPositionDeleteWriterShuffled(blackhole, DeleteGranularity.FILE);
+  }
+
+  private void writeUnpartitionedFanoutPositionDeleteWriterShuffled(
+      Blackhole blackhole, DeleteGranularity deleteGranularity) throws IOException {
 
     FileIO io = table().io();
 
@@ -428,7 +372,7 @@ public abstract class WritersBenchmark extends IcebergSourceBenchmark {
 
     FanoutPositionOnlyDeleteWriter<InternalRow> writer =
         new FanoutPositionOnlyDeleteWriter<>(
-            writerFactory, fileFactory, io, TARGET_FILE_SIZE_IN_BYTES);
+            writerFactory, fileFactory, io, TARGET_FILE_SIZE_IN_BYTES, deleteGranularity);
 
     PositionDelete<InternalRow> positionDelete = PositionDelete.create();
     try (FanoutPositionOnlyDeleteWriter<InternalRow> closeableWriter = writer) {

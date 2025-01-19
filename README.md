@@ -17,7 +17,7 @@
   - under the License.
   -->
 
-![Iceberg](https://iceberg.apache.org/docs/latest/img/Iceberg-logo.png)
+![Iceberg](https://iceberg.apache.org/assets/images/Iceberg-logo.svg)
 
 [![](https://github.com/apache/iceberg/actions/workflows/java-ci.yml/badge.svg)](https://github.com/apache/iceberg/actions/workflows/java-ci.yml)
 [![Slack](https://img.shields.io/badge/chat-on%20Slack-brightgreen.svg)](https://apache-iceberg.slack.com/)
@@ -37,11 +37,8 @@ The core Java library is located in this repository and is the reference impleme
 
 [Documentation][iceberg-docs] is available for all libraries and integrations.
 
-Current work is tracked in the [roadmap][roadmap].
-
 [iceberg-docs]: https://iceberg.apache.org/docs/latest/
-[iceberg-spec]: https://iceberg.apache.org/spec
-[roadmap]: https://iceberg.apache.org/roadmap/
+[iceberg-spec]: https://iceberg.apache.org/spec/
 
 ## Collaboration
 
@@ -54,12 +51,12 @@ Community discussions happen primarily on the [dev mailing list][dev-list] or on
 
 ### Building
 
-Iceberg is built using Gradle with Java 8, 11, or 17.
+Iceberg is built using Gradle with Java 11, 17, or 21.
 
 * To invoke a build and run tests: `./gradlew build`
 * To skip tests: `./gradlew build -x test -x integrationTest`
 * To fix code style for default versions: `./gradlew spotlessApply`
-* To fix code style for all versions of Spark/Hive/Flink:`./gradlew spotlessApply -DallVersions`
+* To fix code style for all versions of Spark/Hive/Flink:`./gradlew spotlessApply -DallModules`
 
 Iceberg table support is organized in library modules:
 
@@ -77,12 +74,11 @@ Iceberg also has modules for adding Iceberg support to processing engines:
 * `iceberg-spark` is an implementation of Spark's Datasource V2 API for Iceberg with submodules for each spark versions (use runtime jars for a shaded version)
 * `iceberg-flink` contains classes for integrating with Apache Flink (use iceberg-flink-runtime for a shaded version)
 * `iceberg-mr` contains an InputFormat and other classes for integrating with Apache Hive
-* `iceberg-pig` is an implementation of Pig's LoadFunc API for Iceberg
 
 ---
 **NOTE**
 
-The tests require Docker to execute. On MacOS (with Docker Desktop), you might need to create a symbolic name to the docker socket in order to be detected by the tests:
+The tests require Docker to execute. On macOS (with Docker Desktop), you might need to create a symbolic name to the docker socket in order to be detected by the tests:
 
 ```
 sudo ln -s $HOME/.docker/run/docker.sock /var/run/docker.sock
@@ -101,3 +97,4 @@ This repository contains the Java implementation of Iceberg. Other implementatio
 * **Go**: [iceberg-go](https://github.com/apache/iceberg-go)
 * **PyIceberg** (Python): [iceberg-python](https://github.com/apache/iceberg-python)
 * **Rust**: [iceberg-rust](https://github.com/apache/iceberg-rust)
+* **C++**: [iceberg-cpp](https://github.com/apache/iceberg-cpp)

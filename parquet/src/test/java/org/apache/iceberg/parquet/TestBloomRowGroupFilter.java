@@ -40,6 +40,7 @@ import static org.apache.iceberg.expressions.Expressions.year;
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.File;
 import java.io.IOException;
@@ -54,7 +55,6 @@ import org.apache.avro.generic.GenericData.Record;
 import org.apache.avro.generic.GenericRecordBuilder;
 import org.apache.iceberg.Files;
 import org.apache.iceberg.Schema;
-import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.avro.AvroSchemaUtil;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expression;
@@ -82,7 +82,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 public class TestBloomRowGroupFilter {
 
-  private static final Types.StructType structFieldType =
+  private static final Types.StructType STRUCT_FIELD_TYPE =
       Types.StructType.of(Types.NestedField.required(16, "int_field", IntegerType.get()));
   private static final Schema SCHEMA =
       new Schema(
@@ -100,7 +100,7 @@ public class TestBloomRowGroupFilter {
           optional(12, "all_nans", DoubleType.get()),
           optional(13, "some_nans", FloatType.get()),
           optional(14, "no_nans", DoubleType.get()),
-          optional(15, "struct_not_null", structFieldType),
+          optional(15, "struct_not_null", STRUCT_FIELD_TYPE),
           optional(17, "not_in_file", FloatType.get()),
           optional(18, "no_stats", StringType.get()),
           optional(19, "boolean", Types.BooleanType.get()),
@@ -111,9 +111,10 @@ public class TestBloomRowGroupFilter {
           optional(24, "binary", Types.BinaryType.get()),
           optional(25, "int_decimal", Types.DecimalType.of(8, 2)),
           optional(26, "long_decimal", Types.DecimalType.of(14, 2)),
-          optional(27, "fixed_decimal", Types.DecimalType.of(31, 2)));
+          optional(27, "fixed_decimal", Types.DecimalType.of(31, 2)),
+          optional(28, "incompatible-name", Types.DecimalType.of(8, 2)));
 
-  private static final Types.StructType _structFieldType =
+  private static final Types.StructType UNDERSCORE_STRUCT_FIELD_TYPE =
       Types.StructType.of(Types.NestedField.required(16, "_int_field", IntegerType.get()));
 
   private static final Schema FILE_SCHEMA =
@@ -132,7 +133,7 @@ public class TestBloomRowGroupFilter {
           optional(12, "_all_nans", DoubleType.get()),
           optional(13, "_some_nans", FloatType.get()),
           optional(14, "_no_nans", DoubleType.get()),
-          optional(15, "_struct_not_null", _structFieldType),
+          optional(15, "_struct_not_null", UNDERSCORE_STRUCT_FIELD_TYPE),
           optional(18, "_no_stats", StringType.get()),
           optional(19, "_boolean", Types.BooleanType.get()),
           optional(20, "_time", Types.TimeType.get()),
@@ -142,14 +143,15 @@ public class TestBloomRowGroupFilter {
           optional(24, "_binary", Types.BinaryType.get()),
           optional(25, "_int_decimal", Types.DecimalType.of(8, 2)),
           optional(26, "_long_decimal", Types.DecimalType.of(14, 2)),
-          optional(27, "_fixed_decimal", Types.DecimalType.of(31, 2)));
+          optional(27, "_fixed_decimal", Types.DecimalType.of(31, 2)),
+          optional(28, "_incompatible-name", Types.DecimalType.of(8, 2)));
 
   private static final String TOO_LONG_FOR_STATS;
 
   static {
     StringBuilder sb = new StringBuilder();
     for (int i = 0; i < 200; i += 1) {
-      sb.append(UUID.randomUUID().toString());
+      sb.append(UUID.randomUUID());
     }
     TOO_LONG_FOR_STATS = sb.toString();
   }
@@ -161,7 +163,7 @@ public class TestBloomRowGroupFilter {
   private static final double DOUBLE_BASE = 1000D;
   private static final float FLOAT_BASE = 10000F;
   private static final String BINARY_PREFIX = "BINARY测试_";
-  private static final Instant instant = Instant.parse("2018-10-10T00:00:00.000Z");
+  private static final Instant INSTANT = Instant.parse("2018-10-10T00:00:00.000Z");
   private static final List<UUID> RANDOM_UUIDS;
   private static final List<byte[]> RANDOM_BYTES;
 
@@ -192,7 +194,8 @@ public class TestBloomRowGroupFilter {
     assertThat(temp.delete()).isTrue();
 
     // build struct field schema
-    org.apache.avro.Schema structSchema = AvroSchemaUtil.convert(_structFieldType);
+    org.apache.avro.Schema structSchema = AvroSchemaUtil.convert(UNDERSCORE_STRUCT_FIELD_TYPE);
+    String compatibleFieldName = "_incompatible_x2Dname";
 
     OutputFile outFile = Files.localOutput(temp);
     try (FileAppender<Record> appender =
@@ -224,6 +227,7 @@ public class TestBloomRowGroupFilter {
             .set(PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX + "_int_decimal", "true")
             .set(PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX + "_long_decimal", "true")
             .set(PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX + "_fixed_decimal", "true")
+            .set(PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX + "_incompatible-name", "true")
             .build()) {
       GenericRecordBuilder builder = new GenericRecordBuilder(convert(FILE_SCHEMA, "table"));
       // create 50 records
@@ -251,14 +255,15 @@ public class TestBloomRowGroupFilter {
         builder.set("_struct_not_null", structNotNull); // struct with int
         builder.set("_no_stats", TOO_LONG_FOR_STATS); // value longer than 4k will produce no stats
         builder.set("_boolean", i % 2 == 0);
-        builder.set("_time", instant.plusSeconds(i * 86400).toEpochMilli());
-        builder.set("_date", instant.plusSeconds(i * 86400).getEpochSecond());
-        builder.set("_timestamp", instant.plusSeconds(i * 86400).toEpochMilli());
-        builder.set("_timestamptz", instant.plusSeconds(i * 86400).toEpochMilli());
+        builder.set("_time", INSTANT.plusSeconds(i * 86400).toEpochMilli());
+        builder.set("_date", INSTANT.plusSeconds(i * 86400).getEpochSecond());
+        builder.set("_timestamp", INSTANT.plusSeconds(i * 86400).toEpochMilli());
+        builder.set("_timestamptz", INSTANT.plusSeconds(i * 86400).toEpochMilli());
         builder.set("_binary", RANDOM_BYTES.get(i));
         builder.set("_int_decimal", new BigDecimal(String.valueOf(77.77 + i)));
         builder.set("_long_decimal", new BigDecimal(String.valueOf(88.88 + i)));
         builder.set("_fixed_decimal", new BigDecimal(String.valueOf(99.99 + i)));
+        builder.set(compatibleFieldName, new BigDecimal(String.valueOf(77.77 + i)));
 
         appender.add(builder.build());
       }
@@ -413,13 +418,13 @@ public class TestBloomRowGroupFilter {
 
   @Test
   public void testMissingColumn() {
-    TestHelpers.assertThrows(
-        "Should complain about missing column in expression",
-        ValidationException.class,
-        "Cannot find field 'missing'",
-        () ->
-            new ParquetBloomRowGroupFilter(SCHEMA, lessThan("missing", 5))
-                .shouldRead(parquetSchema, rowGroupMetadata, bloomStore));
+    assertThatThrownBy(
+            () ->
+                new ParquetBloomRowGroupFilter(SCHEMA, equal("missing", 5))
+                    .shouldRead(parquetSchema, rowGroupMetadata, bloomStore))
+        .as("Should complain about missing column in expression")
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("Cannot find field 'missing'");
   }
 
   @Test
@@ -683,7 +688,7 @@ public class TestBloomRowGroupFilter {
   }
 
   @Test
-  public void testIntDeciamlEq() {
+  public void testIntDecimalEq() {
     for (int i = 0; i < INT_VALUE_COUNT; i++) {
       boolean shouldRead =
           new ParquetBloomRowGroupFilter(
@@ -699,7 +704,7 @@ public class TestBloomRowGroupFilter {
   }
 
   @Test
-  public void testLongDeciamlEq() {
+  public void testLongDecimalEq() {
     for (int i = 0; i < INT_VALUE_COUNT; i++) {
       boolean shouldRead =
           new ParquetBloomRowGroupFilter(
@@ -715,7 +720,7 @@ public class TestBloomRowGroupFilter {
   }
 
   @Test
-  public void testFixedDeciamlEq() {
+  public void testFixedDecimalEq() {
     for (int i = 0; i < INT_VALUE_COUNT; i++) {
       boolean shouldRead =
           new ParquetBloomRowGroupFilter(
@@ -807,7 +812,7 @@ public class TestBloomRowGroupFilter {
   @Test
   public void testTimeEq() {
     for (int i = -20; i < INT_VALUE_COUNT + 20; i++) {
-      Instant ins = instant.plusSeconds(i * 86400);
+      Instant ins = INSTANT.plusSeconds(i * 86400);
       boolean shouldRead =
           new ParquetBloomRowGroupFilter(SCHEMA, equal("time", ins.toEpochMilli()))
               .shouldRead(parquetSchema, rowGroupMetadata, bloomStore);
@@ -822,7 +827,7 @@ public class TestBloomRowGroupFilter {
   @Test
   public void testDateEq() {
     for (int i = -20; i < INT_VALUE_COUNT + 20; i++) {
-      Instant ins = instant.plusSeconds(i * 86400);
+      Instant ins = INSTANT.plusSeconds(i * 86400);
       boolean shouldRead =
           new ParquetBloomRowGroupFilter(SCHEMA, equal("date", ins.getEpochSecond()))
               .shouldRead(parquetSchema, rowGroupMetadata, bloomStore);
@@ -837,7 +842,7 @@ public class TestBloomRowGroupFilter {
   @Test
   public void testTimestampEq() {
     for (int i = -20; i < INT_VALUE_COUNT + 20; i++) {
-      Instant ins = instant.plusSeconds(i * 86400);
+      Instant ins = INSTANT.plusSeconds(i * 86400);
       boolean shouldRead =
           new ParquetBloomRowGroupFilter(SCHEMA, equal("timestamp", ins.toEpochMilli()))
               .shouldRead(parquetSchema, rowGroupMetadata, bloomStore);
@@ -852,7 +857,7 @@ public class TestBloomRowGroupFilter {
   @Test
   public void testTimestamptzEq() {
     for (int i = -20; i < INT_VALUE_COUNT + 20; i++) {
-      Instant ins = instant.plusSeconds(i * 86400);
+      Instant ins = INSTANT.plusSeconds(i * 86400);
       boolean shouldRead =
           new ParquetBloomRowGroupFilter(SCHEMA, equal("timestamptz", ins.toEpochMilli()))
               .shouldRead(parquetSchema, rowGroupMetadata, bloomStore);
@@ -973,16 +978,16 @@ public class TestBloomRowGroupFilter {
 
   @Test
   public void testMissingBloomFilterForColumn() {
-    TestHelpers.assertThrows(
-        "Should complain about missing bloom filter",
-        IllegalStateException.class,
-        "Failed to read required bloom filter for id: 10",
-        () ->
-            new ParquetBloomRowGroupFilter(SCHEMA, equal("some_nulls", "some"))
-                .shouldRead(
-                    parquetSchema,
-                    rowGroupMetadata,
-                    new DummyBloomFilterReader(null, rowGroupMetadata)));
+    assertThatThrownBy(
+            () ->
+                new ParquetBloomRowGroupFilter(SCHEMA, equal("some_nulls", "some"))
+                    .shouldRead(
+                        parquetSchema,
+                        rowGroupMetadata,
+                        new DummyBloomFilterReader(null, rowGroupMetadata)))
+        .as("Should complain about missing bloom filter")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Failed to read required bloom filter for id: 10");
   }
 
   private static class DummyBloomFilterReader extends BloomFilterReader {
@@ -1188,5 +1193,22 @@ public class TestBloomRowGroupFilter {
     assertThat(shouldRead)
         .as("Should read: filter contains non-reference evaluate as True")
         .isTrue();
+  }
+
+  @Test
+  public void testIncompatibleColumnNameEq() {
+    for (int i = 0; i < INT_VALUE_COUNT; i++) {
+      boolean shouldRead =
+          new ParquetBloomRowGroupFilter(
+                  SCHEMA, equal("incompatible-name", new BigDecimal(String.valueOf(77.77 + i))))
+              .shouldRead(parquetSchema, rowGroupMetadata, bloomStore);
+      assertThat(shouldRead).as("Should read: decimal within range").isTrue();
+    }
+
+    boolean shouldRead =
+        new ParquetBloomRowGroupFilter(
+                SCHEMA, equal("incompatible-name", new BigDecimal("1234.56")))
+            .shouldRead(parquetSchema, rowGroupMetadata, bloomStore);
+    assertThat(shouldRead).as("Should not read: decimal outside range").isFalse();
   }
 }

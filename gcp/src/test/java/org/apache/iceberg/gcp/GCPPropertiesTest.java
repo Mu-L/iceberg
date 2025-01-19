@@ -19,18 +19,20 @@
 package org.apache.iceberg.gcp;
 
 import static org.apache.iceberg.gcp.GCPProperties.GCS_NO_AUTH;
+import static org.apache.iceberg.gcp.GCPProperties.GCS_OAUTH2_REFRESH_CREDENTIALS_ENABLED;
+import static org.apache.iceberg.gcp.GCPProperties.GCS_OAUTH2_REFRESH_CREDENTIALS_ENDPOINT;
 import static org.apache.iceberg.gcp.GCPProperties.GCS_OAUTH2_TOKEN;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class GCPPropertiesTest {
 
   @Test
   public void testOAuthWithNoAuth() {
-    Assertions.assertThatIllegalStateException()
+    assertThatIllegalStateException()
         .isThrownBy(
             () ->
                 new GCPProperties(ImmutableMap.of(GCS_OAUTH2_TOKEN, "oauth", GCS_NO_AUTH, "true")))
@@ -46,5 +48,33 @@ public class GCPPropertiesTest {
     gcpProperties = new GCPProperties(ImmutableMap.of(GCS_NO_AUTH, "true"));
     assertThat(gcpProperties.noAuth()).isTrue();
     assertThat(gcpProperties.oauth2Token()).isNotPresent();
+  }
+
+  @Test
+  public void refreshCredentialsEndpointSet() {
+    GCPProperties gcpProperties =
+        new GCPProperties(
+            ImmutableMap.of(GCS_OAUTH2_REFRESH_CREDENTIALS_ENDPOINT, "/v1/credentials"));
+    assertThat(gcpProperties.oauth2RefreshCredentialsEnabled()).isTrue();
+    assertThat(gcpProperties.oauth2RefreshCredentialsEndpoint())
+        .isPresent()
+        .get()
+        .isEqualTo("/v1/credentials");
+  }
+
+  @Test
+  public void refreshCredentialsEndpointSetButRefreshDisabled() {
+    GCPProperties gcpProperties =
+        new GCPProperties(
+            ImmutableMap.of(
+                GCS_OAUTH2_REFRESH_CREDENTIALS_ENDPOINT,
+                "/v1/credentials",
+                GCS_OAUTH2_REFRESH_CREDENTIALS_ENABLED,
+                "false"));
+    assertThat(gcpProperties.oauth2RefreshCredentialsEnabled()).isFalse();
+    assertThat(gcpProperties.oauth2RefreshCredentialsEndpoint())
+        .isPresent()
+        .get()
+        .isEqualTo("/v1/credentials");
   }
 }

@@ -49,7 +49,8 @@ import org.apache.iceberg.util.SerializableSupplier;
  * <p><em>Note:</em> loading the complete metadata from a large number of nodes can overwhelm the
  * storage.
  */
-public class SerializableTable implements Table, Serializable {
+public class SerializableTable implements Table, HasTableOperations, Serializable {
+  private static final int UNKNOWN_FORMAT_VERSION = -1;
 
   private final String name;
   private final String location;
@@ -62,13 +63,14 @@ public class SerializableTable implements Table, Serializable {
   private final FileIO io;
   private final EncryptionManager encryption;
   private final Map<String, SnapshotRef> refs;
+  private final UUID uuid;
+  private final int formatVersion;
 
   private transient volatile LocationProvider lazyLocationProvider = null;
   private transient volatile Table lazyTable = null;
   private transient volatile Schema lazySchema = null;
   private transient volatile Map<Integer, PartitionSpec> lazySpecs = null;
   private transient volatile SortOrder lazySortOrder = null;
-  private final UUID uuid;
 
   protected SerializableTable(Table table) {
     this.name = table.name();
@@ -85,6 +87,7 @@ public class SerializableTable implements Table, Serializable {
     this.encryption = table.encryption();
     this.refs = SerializableMap.copyOf(table.refs());
     this.uuid = table.uuid();
+    this.formatVersion = formatVersion(table);
   }
 
   /**
@@ -105,6 +108,8 @@ public class SerializableTable implements Table, Serializable {
     if (table instanceof HasTableOperations) {
       TableOperations ops = ((HasTableOperations) table).operations();
       return ops.current().metadataFileLocation();
+    } else if (table instanceof BaseMetadataTable) {
+      return ((BaseMetadataTable) table).table().operations().current().metadataFileLocation();
     } else {
       return null;
     }
@@ -154,6 +159,23 @@ public class SerializableTable implements Table, Serializable {
   @Override
   public Map<String, String> properties() {
     return properties;
+  }
+
+  public int formatVersion() {
+    if (formatVersion == UNKNOWN_FORMAT_VERSION) {
+      throw new UnsupportedOperationException(
+          this.getClass().getName() + " does not have a format version");
+    }
+    return formatVersion;
+  }
+
+  private int formatVersion(Table table) {
+    if (table instanceof HasTableOperations) {
+      HasTableOperations ops = (HasTableOperations) table;
+      return ops.operations().current().formatVersion();
+    } else {
+      return UNKNOWN_FORMAT_VERSION;
+    }
   }
 
   @Override
@@ -277,6 +299,16 @@ public class SerializableTable implements Table, Serializable {
   }
 
   @Override
+  public IncrementalAppendScan newIncrementalAppendScan() {
+    return lazyTable().newIncrementalAppendScan();
+  }
+
+  @Override
+  public IncrementalChangelogScan newIncrementalChangelogScan() {
+    return lazyTable().newIncrementalChangelogScan();
+  }
+
+  @Override
   public BatchScan newBatchScan() {
     return lazyTable().newBatchScan();
   }
@@ -386,6 +418,11 @@ public class SerializableTable implements Table, Serializable {
     throw new UnsupportedOperationException(errorMsg("newTransaction"));
   }
 
+  @Override
+  public StaticTableOperations operations() {
+    return (StaticTableOperations) ((BaseTable) lazyTable()).operations();
+  }
+
   private String errorMsg(String operation) {
     return String.format("Operation %s is not supported after the table is serialized", operation);
   }
@@ -403,6 +440,12 @@ public class SerializableTable implements Table, Serializable {
     @Override
     protected Table newTable(TableOperations ops, String tableName) {
       return MetadataTableUtils.createMetadataTableInstance(ops, baseTableName, tableName, type);
+    }
+
+    @Override
+    public StaticTableOperations operations() {
+      throw new UnsupportedOperationException(
+          this.getClass().getName() + " does not support operations()");
     }
 
     public MetadataTableType type() {

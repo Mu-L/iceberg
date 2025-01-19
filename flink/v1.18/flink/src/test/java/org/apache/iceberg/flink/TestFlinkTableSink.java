@@ -18,69 +18,46 @@
  */
 package org.apache.iceberg.flink;
 
-import java.util.Collections;
+import static org.assertj.core.api.Assumptions.assumeThat;
+
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
-import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Expressions;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableEnvironmentImpl;
-import org.apache.flink.table.operations.ModifyOperation;
-import org.apache.flink.table.planner.delegation.PlannerBase;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.types.Row;
-import org.apache.iceberg.DataFile;
-import org.apache.iceberg.DistributionMode;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.Parameter;
+import org.apache.iceberg.Parameters;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.flink.source.BoundedTableFactory;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.iceberg.relocated.com.google.common.collect.Sets;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
 
-@RunWith(Parameterized.class)
-public class TestFlinkTableSink extends FlinkCatalogTestBase {
-
-  @ClassRule
-  public static final MiniClusterWithClientResource MINI_CLUSTER_RESOURCE =
-      MiniClusterResource.createWithClassloaderCheckDisabled();
-
-  @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+public class TestFlinkTableSink extends CatalogTestBase {
 
   private static final String SOURCE_TABLE = "default_catalog.default_database.bounded_source";
   private static final String TABLE_NAME = "test_table";
   private TableEnvironment tEnv;
   private Table icebergTable;
 
-  private final FileFormat format;
-  private final boolean isStreamingJob;
+  @Parameter(index = 2)
+  private FileFormat format;
 
-  @Parameterized.Parameters(
-      name = "catalogName={0}, baseNamespace={1}, format={2}, isStreaming={3}")
-  public static Iterable<Object[]> parameters() {
+  @Parameter(index = 3)
+  private boolean isStreamingJob;
+
+  @Parameters(name = "catalogName={0}, baseNamespace={1}, format={2}, isStreaming={3}")
+  public static List<Object[]> parameters() {
     List<Object[]> parameters = Lists.newArrayList();
     for (FileFormat format :
         new FileFormat[] {FileFormat.ORC, FileFormat.AVRO, FileFormat.PARQUET}) {
       for (Boolean isStreaming : new Boolean[] {true, false}) {
-        for (Object[] catalogParams : FlinkCatalogTestBase.parameters()) {
+        for (Object[] catalogParams : CatalogTestBase.parameters()) {
           String catalogName = (String) catalogParams[0];
           Namespace baseNamespace = (Namespace) catalogParams[1];
           parameters.add(new Object[] {catalogName, baseNamespace, format, isStreaming});
@@ -88,13 +65,6 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
       }
     }
     return parameters;
-  }
-
-  public TestFlinkTableSink(
-      String catalogName, Namespace baseNamespace, FileFormat format, Boolean isStreamingJob) {
-    super(catalogName, baseNamespace);
-    this.format = format;
-    this.isStreamingJob = isStreamingJob;
   }
 
   @Override
@@ -106,7 +76,7 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
           settingsBuilder.inStreamingMode();
           StreamExecutionEnvironment env =
               StreamExecutionEnvironment.getExecutionEnvironment(
-                  MiniClusterResource.DISABLE_CLASSLOADER_CHECK_CONFIG);
+                  MiniFlinkClusterExtension.DISABLE_CLASSLOADER_CHECK_CONFIG);
           env.enableCheckpointing(400);
           env.setMaxParallelism(2);
           env.setParallelism(2);
@@ -121,7 +91,7 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
   }
 
   @Override
-  @Before
+  @BeforeEach
   public void before() {
     super.before();
     sql("CREATE DATABASE %s", flinkDatabase);
@@ -134,15 +104,15 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
   }
 
   @Override
-  @After
+  @AfterEach
   public void clean() {
     sql("DROP TABLE IF EXISTS %s.%s", flinkDatabase, TABLE_NAME);
-    sql("DROP DATABASE IF EXISTS %s", flinkDatabase);
+    dropDatabase(flinkDatabase, true);
     BoundedTableFactory.clearDataSets();
     super.clean();
   }
 
-  @Test
+  @TestTemplate
   public void testInsertFromSourceTable() throws Exception {
     // Register the rows into a temporary table.
     getTableEnv()
@@ -169,10 +139,11 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
             SimpleDataUtil.createRecord(null, "bar")));
   }
 
-  @Test
+  @TestTemplate
   public void testOverwriteTable() throws Exception {
-    Assume.assumeFalse(
-        "Flink unbounded streaming does not support overwrite operation", isStreamingJob);
+    assumeThat(isStreamingJob)
+        .as("Flink unbounded streaming does not support overwrite operation")
+        .isFalse();
 
     sql("INSERT INTO %s SELECT 1, 'a'", TABLE_NAME);
     SimpleDataUtil.assertTableRecords(
@@ -183,45 +154,11 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
         icebergTable, Lists.newArrayList(SimpleDataUtil.createRecord(2, "b")));
   }
 
-  @Test
-  public void testWriteParallelism() throws Exception {
-    List<Row> dataSet =
-        IntStream.range(1, 1000)
-            .mapToObj(i -> ImmutableList.of(Row.of(i, "aaa"), Row.of(i, "bbb"), Row.of(i, "ccc")))
-            .flatMap(List::stream)
-            .collect(Collectors.toList());
-    String dataId = BoundedTableFactory.registerDataSet(ImmutableList.of(dataSet));
-    sql(
-        "CREATE TABLE %s(id INT NOT NULL, data STRING NOT NULL)"
-            + " WITH ('connector'='BoundedSource', 'data-id'='%s')",
-        SOURCE_TABLE, dataId);
-
-    PlannerBase planner = (PlannerBase) ((TableEnvironmentImpl) getTableEnv()).getPlanner();
-    String insertSQL =
-        String.format(
-            "INSERT INTO %s /*+ OPTIONS('write-parallelism'='1') */ SELECT * FROM %s",
-            TABLE_NAME, SOURCE_TABLE);
-    ModifyOperation operation = (ModifyOperation) planner.getParser().parse(insertSQL).get(0);
-    Transformation<?> dummySink = planner.translate(Collections.singletonList(operation)).get(0);
-    Transformation<?> committer = dummySink.getInputs().get(0);
-    Transformation<?> writer = committer.getInputs().get(0);
-
-    Assert.assertEquals("Should have the expected 1 parallelism.", 1, writer.getParallelism());
-
-    writer
-        .getInputs()
-        .forEach(
-            input ->
-                Assert.assertEquals(
-                    "Should have the expected parallelism.",
-                    isStreamingJob ? 2 : 4,
-                    input.getParallelism()));
-  }
-
-  @Test
+  @TestTemplate
   public void testReplacePartitions() throws Exception {
-    Assume.assumeFalse(
-        "Flink unbounded streaming does not support overwrite operation", isStreamingJob);
+    assumeThat(isStreamingJob)
+        .as("Flink unbounded streaming does not support overwrite operation")
+        .isFalse();
     String tableName = "test_partition";
     sql(
         "CREATE TABLE %s(id INT, data VARCHAR) PARTITIONED BY (data) WITH ('write.format.default'='%s')",
@@ -265,7 +202,7 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
     }
   }
 
-  @Test
+  @TestTemplate
   public void testInsertIntoPartition() throws Exception {
     String tableName = "test_insert_into_partition";
     sql(
@@ -300,79 +237,6 @@ public class TestFlinkTableSink extends FlinkCatalogTestBase {
               SimpleDataUtil.createRecord(3, "b"),
               SimpleDataUtil.createRecord(4, "c"),
               SimpleDataUtil.createRecord(5, "d")));
-    } finally {
-      sql("DROP TABLE IF EXISTS %s.%s", flinkDatabase, tableName);
-    }
-  }
-
-  @Test
-  public void testHashDistributeMode() throws Exception {
-    String tableName = "test_hash_distribution_mode";
-    Map<String, String> tableProps =
-        ImmutableMap.of(
-            "write.format.default",
-            format.name(),
-            TableProperties.WRITE_DISTRIBUTION_MODE,
-            DistributionMode.HASH.modeName());
-
-    // Initialize a BoundedSource table to precisely emit those rows in only one checkpoint.
-    List<Row> dataSet =
-        IntStream.range(1, 1000)
-            .mapToObj(i -> ImmutableList.of(Row.of(i, "aaa"), Row.of(i, "bbb"), Row.of(i, "ccc")))
-            .flatMap(List::stream)
-            .collect(Collectors.toList());
-    String dataId = BoundedTableFactory.registerDataSet(ImmutableList.of(dataSet));
-    sql(
-        "CREATE TABLE %s(id INT NOT NULL, data STRING NOT NULL)"
-            + " WITH ('connector'='BoundedSource', 'data-id'='%s')",
-        SOURCE_TABLE, dataId);
-    Assert.assertEquals(
-        "Should have the expected rows in source table.",
-        Sets.newHashSet(dataSet),
-        Sets.newHashSet(sql("SELECT * FROM %s", SOURCE_TABLE)));
-
-    sql(
-        "CREATE TABLE %s(id INT, data VARCHAR) PARTITIONED BY (data) WITH %s",
-        tableName, toWithClause(tableProps));
-
-    try {
-      // Insert data set.
-      sql("INSERT INTO %s SELECT * FROM %s", tableName, SOURCE_TABLE);
-
-      Assert.assertEquals(
-          "Should have the expected rows in sink table.",
-          Sets.newHashSet(dataSet),
-          Sets.newHashSet(sql("SELECT * FROM %s", tableName)));
-
-      // Sometimes we will have more than one checkpoint if we pass the auto checkpoint interval,
-      // thus producing multiple snapshots.  Here we assert that each snapshot has only 1 file per
-      // partition.
-      Table table = validationCatalog.loadTable(TableIdentifier.of(icebergNamespace, tableName));
-      Map<Long, List<DataFile>> snapshotToDataFiles = SimpleDataUtil.snapshotToDataFiles(table);
-      for (List<DataFile> dataFiles : snapshotToDataFiles.values()) {
-        if (dataFiles.isEmpty()) {
-          continue;
-        }
-
-        Assert.assertEquals(
-            "There should be 1 data file in partition 'aaa'",
-            1,
-            SimpleDataUtil.matchingPartitions(
-                    dataFiles, table.spec(), ImmutableMap.of("data", "aaa"))
-                .size());
-        Assert.assertEquals(
-            "There should be 1 data file in partition 'bbb'",
-            1,
-            SimpleDataUtil.matchingPartitions(
-                    dataFiles, table.spec(), ImmutableMap.of("data", "bbb"))
-                .size());
-        Assert.assertEquals(
-            "There should be 1 data file in partition 'ccc'",
-            1,
-            SimpleDataUtil.matchingPartitions(
-                    dataFiles, table.spec(), ImmutableMap.of("data", "ccc"))
-                .size());
-      }
     } finally {
       sql("DROP TABLE IF EXISTS %s.%s", flinkDatabase, tableName);
     }

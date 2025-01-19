@@ -22,11 +22,16 @@ on:
   push:
     branches:
       - 'main'
-      - '0.**'
+      - '0.*'
+      - '1.*'
+      - '2.*'
     tags:
       - 'apache-iceberg-**'
   pull_request:
     paths:
+      - '.github/workflows/api-binary-compatibility.yml'
+      - '*.gradle'
+      - 'gradle*'
       - 'api/**'
       - '.palantir/revapi.yml'
 
@@ -53,7 +58,7 @@ jobs:
       - run: |
           echo "Using the old version tag, as per git describe, of $(git describe)";
       - run: ./gradlew revapi --rerun-tasks
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: test logs

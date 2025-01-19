@@ -18,9 +18,7 @@ title: "Spark and Iceberg Quickstart"
  - limitations under the License.
  -->
 
-## Spark and Iceberg Quickstart
-
-This guide will get you up and running with an Iceberg and Spark environment, including sample code to
+This guide will get you up and running with Apache Iceberg™ using Apache Spark™, including sample code to
 highlight some powerful features. You can learn more about Iceberg's Spark runtime by checking out the [Spark](docs/latest/spark-ddl.md) section.
 
 - [Docker-Compose](#docker-compose)
@@ -63,7 +61,7 @@ services:
       - 10000:10000
       - 10001:10001
   rest:
-    image: tabulario/iceberg-rest
+    image: apache/iceberg-rest-fixture
     container_name: iceberg-rest
     networks:
       iceberg_net:
@@ -102,7 +100,7 @@ services:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
-    entrypoint: >
+    entrypoint: |
       /bin/sh -c "
       until (/usr/bin/mc config host add minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
       /usr/bin/mc rm -r --force minio/warehouse;
@@ -335,6 +333,7 @@ If you already have a Spark environment, you can add Iceberg, using the `--packa
     If you want to include Iceberg in your Spark installation, add the Iceberg Spark runtime to Spark's `jars` folder.
     You can download the runtime by visiting to the [Releases](releases.md) page.
 
+<!-- markdown-link-check-disable-next-line -->
 [spark-runtime-jar]: https://search.maven.org/remotecontent?filepath=org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/{{ icebergVersion }}/iceberg-spark-runtime-3.5_2.12-{{ icebergVersion }}.jar
 
 #### Learn More

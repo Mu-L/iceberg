@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.data.avro;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.io.File;
 import java.io.IOException;
 import org.apache.iceberg.Files;
@@ -32,8 +34,8 @@ public class TestGenericReadProjection extends TestReadProjection {
   @Override
   protected Record writeAndRead(String desc, Schema writeSchema, Schema readSchema, Record record)
       throws IOException {
-    File file = temp.newFile(desc + ".avro");
-    file.delete();
+    File file = File.createTempFile("junit", ".avro", tempDir);
+    assertThat(file.delete()).isTrue();
 
     try (FileAppender<Record> appender =
         Avro.write(Files.localOutput(file))
@@ -46,7 +48,7 @@ public class TestGenericReadProjection extends TestReadProjection {
     Iterable<Record> records =
         Avro.read(Files.localInput(file))
             .project(readSchema)
-            .createReaderFunc(DataReader::create)
+            .createResolvingReader(PlannedDataReader::create)
             .build();
 
     return Iterables.getOnlyElement(records);

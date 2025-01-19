@@ -25,7 +25,6 @@ import java.util.function.Function;
 import org.apache.iceberg.BaseCombinedScanTask;
 import org.apache.iceberg.BaseScanTaskGroup;
 import org.apache.iceberg.CombinedScanTask;
-import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.MergeableScanTask;
@@ -92,8 +91,7 @@ public class TableScanUtil {
     Function<FileScanTask, Long> weightFunc =
         file ->
             Math.max(
-                file.length()
-                    + file.deletes().stream().mapToLong(ContentFile::fileSizeInBytes).sum(),
+                file.length() + ScanTaskUtil.contentSizeInBytes(file.deletes()),
                 (1 + file.deletes().size()) * openFileCost);
 
     return CloseableIterable.transform(
@@ -153,6 +151,7 @@ public class TableScanUtil {
         task -> Math.max(task.sizeBytes(), task.filesCount() * openFileCost);
 
     Map<Integer, StructProjection> groupingKeyProjectionsBySpec = Maps.newHashMap();
+    PartitionData groupingKeyTemplate = new PartitionData(groupingKeyType);
 
     // group tasks by grouping keys derived from their partition tuples
     StructLikeMap<List<T>> tasksByGroupingKey = StructLikeMap.create(groupingKeyType);
@@ -166,7 +165,7 @@ public class TableScanUtil {
               specId -> StructProjection.create(spec.partitionType(), groupingKeyType));
       List<T> groupingKeyTasks =
           tasksByGroupingKey.computeIfAbsent(
-              projectGroupingKey(groupingKeyProjection, groupingKeyType, partition),
+              groupingKeyTemplate.copyFor(groupingKeyProjection.wrap(partition)),
               groupingKey -> Lists.newArrayList());
       if (task instanceof SplittableScanTask<?>) {
         ((SplittableScanTask<? extends T>) task).split(splitSize).forEach(groupingKeyTasks::add);
@@ -186,23 +185,6 @@ public class TableScanUtil {
     }
 
     return taskGroups;
-  }
-
-  private static StructLike projectGroupingKey(
-      StructProjection groupingKeyProjection,
-      Types.StructType groupingKeyType,
-      StructLike partition) {
-
-    PartitionData groupingKey = new PartitionData(groupingKeyType);
-
-    groupingKeyProjection.wrap(partition);
-
-    for (int pos = 0; pos < groupingKeyProjection.size(); pos++) {
-      Class<?> javaClass = groupingKey.getType(pos).typeId().javaClass();
-      groupingKey.set(pos, groupingKeyProjection.get(pos, javaClass));
-    }
-
-    return groupingKey;
   }
 
   private static <T extends ScanTask> Iterable<ScanTaskGroup<T>> toTaskGroupIterable(

@@ -18,11 +18,12 @@
  */
 package org.apache.iceberg;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.assertj.core.api.Assertions;
 
 public class ValidationHelpers {
 
@@ -41,7 +42,7 @@ public class ValidationHelpers {
   }
 
   public static List<String> files(ContentFile<?>... files) {
-    return Arrays.stream(files).map(file -> file.path().toString()).collect(Collectors.toList());
+    return Arrays.stream(files).map(ContentFile::location).collect(Collectors.toList());
   }
 
   public static void validateDataManifest(
@@ -61,7 +62,7 @@ public class ValidationHelpers {
       actualDataSeqs.add(entry.dataSequenceNumber());
       actualFileSeqs.add(entry.fileSequenceNumber());
       actualSnapshotIds.add(entry.snapshotId());
-      actualFiles.add(entry.file().path().toString());
+      actualFiles.add(entry.file().location());
     }
 
     assertSameElements("data seqs", actualDataSeqs, dataSeqs);
@@ -72,6 +73,6 @@ public class ValidationHelpers {
 
   private static <T> void assertSameElements(String context, List<T> actual, List<T> expected) {
     String errorMessage = String.format("%s must match", context);
-    Assertions.assertThat(actual).as(errorMessage).hasSameElementsAs(expected);
+    assertThat(actual).as(errorMessage).hasSameElementsAs(expected);
   }
 }

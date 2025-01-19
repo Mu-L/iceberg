@@ -18,8 +18,10 @@
  */
 package org.apache.iceberg.hive;
 
+import static org.apache.iceberg.TableProperties.HIVE_LOCK_ENABLED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.doAnswer;
@@ -39,9 +41,11 @@ import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.ValidationException;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types;
 import org.apache.thrift.TException;
 import org.junit.jupiter.api.Test;
+import org.junit.platform.commons.support.ReflectionSupport;
 
 public class TestHiveCommits extends HiveTableBaseTest {
 
@@ -64,7 +68,7 @@ public class TestHiveCommits extends HiveTableBaseTest {
 
     AtomicReference<HiveLock> lockRef = new AtomicReference<>();
 
-    when(spyOps.lockObject(metadataV1))
+    when(spyOps.lockObject(metadataV2))
         .thenAnswer(
             i -> {
               HiveLock lock = (HiveLock) i.callRealMethod();
@@ -273,11 +277,11 @@ public class TestHiveCommits extends HiveTableBaseTest {
     AtomicReference<HiveLock> lock = new AtomicReference<>();
     doAnswer(
             l -> {
-              lock.set(ops.lockObject(metadataV1));
+              lock.set(ops.lockObject(metadataV2));
               return lock.get();
             })
         .when(spyOps)
-        .lockObject(metadataV1);
+        .lockObject(metadataV2);
 
     concurrentCommitAndThrowException(ops, spyOps, table, lock);
 
@@ -300,7 +304,7 @@ public class TestHiveCommits extends HiveTableBaseTest {
   @Test
   public void testInvalidObjectException() {
     TableIdentifier badTi = TableIdentifier.of(DB_NAME, "`tbl`");
-    assertThatThrownBy(() -> catalog.createTable(badTi, schema, PartitionSpec.unpartitioned()))
+    assertThatThrownBy(() -> catalog.createTable(badTi, SCHEMA, PartitionSpec.unpartitioned()))
         .isInstanceOf(ValidationException.class)
         .hasMessage(String.format("Invalid Hive object for %s.%s", DB_NAME, "`tbl`"));
   }
@@ -308,7 +312,7 @@ public class TestHiveCommits extends HiveTableBaseTest {
   @Test
   public void testAlreadyExistsException() {
     assertThatThrownBy(
-            () -> catalog.createTable(TABLE_IDENTIFIER, schema, PartitionSpec.unpartitioned()))
+            () -> catalog.createTable(TABLE_IDENTIFIER, SCHEMA, PartitionSpec.unpartitioned()))
         .isInstanceOf(AlreadyExistsException.class)
         .hasMessage(String.format("Table already exists: %s.%s", DB_NAME, TABLE_NAME));
   }
@@ -395,6 +399,108 @@ public class TestHiveCommits extends HiveTableBaseTest {
     assertThat(metadataFileExists(ops.current()))
         .as("Current metadata file should still exist")
         .isTrue();
+  }
+
+  @Test
+  public void testSuccessCommitWhenCheckCommitStatusOOM() throws TException, InterruptedException {
+    Table table = catalog.loadTable(TABLE_IDENTIFIER);
+    HiveTableOperations ops = (HiveTableOperations) ((HasTableOperations) table).operations();
+
+    TableMetadata metadataV1 = ops.current();
+
+    table.updateSchema().addColumn("n", Types.IntegerType.get()).commit();
+
+    ops.refresh();
+
+    TableMetadata metadataV2 = ops.current();
+
+    assertThat(ops.current().schema().columns()).hasSize(2);
+
+    HiveTableOperations spyOps = spy(ops);
+
+    // Simulate a communication error after a successful commit
+    doAnswer(
+            i -> {
+              org.apache.hadoop.hive.metastore.api.Table tbl =
+                  i.getArgument(0, org.apache.hadoop.hive.metastore.api.Table.class);
+              String location = i.getArgument(2, String.class);
+              ops.persistTable(tbl, true, location);
+              throw new UnknownError();
+            })
+        .when(spyOps)
+        .persistTable(any(), anyBoolean(), any());
+    try {
+      ReflectionSupport.invokeMethod(
+          ops.getClass()
+              .getSuperclass()
+              .getDeclaredMethod("checkCommitStatus", String.class, TableMetadata.class),
+          doThrow(new OutOfMemoryError()).when(spyOps),
+          anyString(),
+          any());
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+
+    assertThatThrownBy(() -> spyOps.commit(metadataV2, metadataV1))
+        .isInstanceOf(OutOfMemoryError.class);
+
+    ops.refresh();
+
+    assertThat(ops.current().location())
+        .as("Current metadata should have changed to metadata V1")
+        .isEqualTo(metadataV1.location());
+    assertThat(metadataFileExists(ops.current()))
+        .as("Current metadata file should still exist")
+        .isTrue();
+  }
+
+  @Test
+  public void testCommitExceptionWithoutMessage() throws TException, InterruptedException {
+    Table table = catalog.loadTable(TABLE_IDENTIFIER);
+    HiveTableOperations ops = (HiveTableOperations) ((HasTableOperations) table).operations();
+
+    TableMetadata metadataV1 = ops.current();
+    table.updateSchema().addColumn("n", Types.IntegerType.get()).commit();
+
+    ops.refresh();
+
+    HiveTableOperations spyOps = spy(ops);
+    doThrow(new RuntimeException()).when(spyOps).persistTable(any(), anyBoolean(), any());
+
+    assertThatThrownBy(() -> spyOps.commit(ops.current(), metadataV1))
+        .isInstanceOf(CommitStateUnknownException.class)
+        .hasMessageStartingWith("null\nCannot determine whether the commit was successful or not");
+  }
+
+  @Test
+  public void testChangeLockWithAlterTable() throws Exception {
+    Table table = catalog.loadTable(TABLE_IDENTIFIER);
+    HiveTableOperations ops = (HiveTableOperations) ((HasTableOperations) table).operations();
+    TableMetadata base = ops.current();
+    final HiveLock initialLock = ops.lockObject(base);
+
+    AtomicReference<HiveLock> lockRef = new AtomicReference<>();
+    HiveTableOperations spyOps = spy(ops);
+    doAnswer(
+            i -> {
+              lockRef.set(ops.lockObject(i.getArgument(0)));
+              return lockRef.get();
+            })
+        .when(spyOps)
+        .lockObject(base);
+
+    TableMetadata newMetadata =
+        TableMetadata.buildFrom(base)
+            .setProperties(
+                ImmutableMap.of(
+                    HIVE_LOCK_ENABLED, initialLock instanceof NoLock ? "true" : "false"))
+            .build();
+    spyOps.commit(base, newMetadata);
+
+    assertThat(lockRef).as("Lock not captured by the stub").doesNotHaveNullValue();
+    assertThat(lockRef.get())
+        .as("New lock mechanism shouldn't take effect before the commit completes")
+        .hasSameClassAs(initialLock);
   }
 
   private void commitAndThrowException(

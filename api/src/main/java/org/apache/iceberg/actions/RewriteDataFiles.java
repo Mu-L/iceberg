@@ -53,6 +53,13 @@ public interface RewriteDataFiles
   int PARTIAL_PROGRESS_MAX_COMMITS_DEFAULT = 10;
 
   /**
+   * The maximum amount of failed commits that this rewrite is allowed if partial progress is
+   * enabled. By default, all commits are allowed to fail. This setting has no effect if partial
+   * progress is disabled.
+   */
+  String PARTIAL_PROGRESS_MAX_FAILED_COMMITS = "partial-progress.max-failed-commits";
+
+  /**
    * The entire rewrite operation is broken down into pieces based on partitioning and within
    * partitions based on size into groups. These sub-units of the rewrite are referred to as file
    * groups. The largest amount of data that should be compacted in a single group is controlled by
@@ -100,6 +107,18 @@ public interface RewriteDataFiles
   boolean USE_STARTING_SEQUENCE_NUMBER_DEFAULT = true;
 
   /**
+   * Remove dangling delete files from the current snapshot after compaction. A delete file is
+   * considered dangling if it does not apply to any live data files.
+   *
+   * <p>Both equality and position dangling delete files will be removed.
+   *
+   * <p>Defaults to false.
+   */
+  String REMOVE_DANGLING_DELETES = "remove-dangling-deletes";
+
+  boolean REMOVE_DANGLING_DELETES_DEFAULT = false;
+
+  /**
    * Forces the rewrite job order based on the value.
    *
    * <p>
@@ -118,6 +137,15 @@ public interface RewriteDataFiles
   String REWRITE_JOB_ORDER = "rewrite-job-order";
 
   String REWRITE_JOB_ORDER_DEFAULT = RewriteJobOrder.NONE.orderName();
+
+  /**
+   * The partition specification ID to be used for rewritten files
+   *
+   * <p>output-spec-id ID is used by the file rewriter during the rewrite operation to identify the
+   * specific output partition spec. Data will be reorganized during the rewrite to align with the
+   * output partitioning. Defaults to the current table specification.
+   */
+  String OUTPUT_SPEC_ID = "output-spec-id";
 
   /**
    * Choose BINPACK as a strategy for this rewrite operation
@@ -199,6 +227,10 @@ public interface RewriteDataFiles
 
     default int failedDataFilesCount() {
       return rewriteFailures().stream().mapToInt(FileGroupFailureResult::dataFilesCount).sum();
+    }
+
+    default int removedDeleteFilesCount() {
+      return 0;
     }
   }
 

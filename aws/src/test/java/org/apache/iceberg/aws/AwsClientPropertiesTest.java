@@ -18,9 +18,14 @@
  */
 package org.apache.iceberg.aws;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.Map;
+import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.aws.s3.VendedCredentialsProvider;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.assertj.core.api.Assertions;
+import org.apache.iceberg.rest.auth.OAuth2Properties;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -28,6 +33,7 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 
@@ -45,8 +51,8 @@ public class AwsClientPropertiesTest {
     awsClientProperties.applyClientRegionConfiguration(mockS3ClientBuilder);
     Mockito.verify(mockS3ClientBuilder).region(regionArgumentCaptor.capture());
     Region region = regionArgumentCaptor.getValue();
-    Assertions.assertThat(region.id())
-        .withFailMessage("region parameter should match what is set in CLIENT_REGION")
+    assertThat(region.id())
+        .as("region parameter should match what is set in CLIENT_REGION")
         .isEqualTo("us-east-1");
   }
 
@@ -56,9 +62,9 @@ public class AwsClientPropertiesTest {
     AwsCredentialsProvider credentialsProvider =
         awsClientProperties.credentialsProvider(null, null, null);
 
-    Assertions.assertThat(credentialsProvider instanceof DefaultCredentialsProvider)
-        .withFailMessage("Should use default credentials if nothing is set")
-        .isTrue();
+    assertThat(credentialsProvider)
+        .as("Should use default credentials if nothing is set")
+        .isInstanceOf(DefaultCredentialsProvider.class);
   }
 
   @Test
@@ -69,8 +75,8 @@ public class AwsClientPropertiesTest {
     AwsCredentialsProvider credentialsProvider2 =
         awsClientProperties.credentialsProvider(null, null, null);
 
-    Assertions.assertThat(credentialsProvider)
-        .withFailMessage("Should create a new instance in each call")
+    assertThat(credentialsProvider)
+        .as("Should create a new instance in each call")
         .isNotSameAs(credentialsProvider2);
   }
 
@@ -81,17 +87,15 @@ public class AwsClientPropertiesTest {
     AwsCredentialsProvider credentialsProvider =
         awsClientProperties.credentialsProvider("key", "secret", null);
 
-    Assertions.assertThat(credentialsProvider.resolveCredentials() instanceof AwsBasicCredentials)
-        .withFailMessage(
-            "Should use basic credentials if access key ID and secret access key are set")
-        .isTrue();
-    Assertions.assertThat(credentialsProvider.resolveCredentials().accessKeyId())
-        .withFailMessage("The access key id should be the same as the one set by tag ACCESS_KEY_ID")
+    assertThat(credentialsProvider.resolveCredentials())
+        .as("Should use basic credentials if access key ID and secret access key are set")
+        .isInstanceOf(AwsBasicCredentials.class);
+    assertThat(credentialsProvider.resolveCredentials().accessKeyId())
+        .as("The access key id should be the same as the one set by tag ACCESS_KEY_ID")
         .isEqualTo("key");
 
-    Assertions.assertThat(credentialsProvider.resolveCredentials().secretAccessKey())
-        .withFailMessage(
-            "The secret access key should be the same as the one set by tag SECRET_ACCESS_KEY")
+    assertThat(credentialsProvider.resolveCredentials().secretAccessKey())
+        .as("The secret access key should be the same as the one set by tag SECRET_ACCESS_KEY")
         .isEqualTo("secret");
   }
 
@@ -102,15 +106,116 @@ public class AwsClientPropertiesTest {
     AwsCredentialsProvider credentialsProvider =
         awsClientProperties.credentialsProvider("key", "secret", "token");
 
-    Assertions.assertThat(credentialsProvider.resolveCredentials() instanceof AwsSessionCredentials)
-        .withFailMessage("Should use session credentials if session token is set")
-        .isTrue();
-    Assertions.assertThat(credentialsProvider.resolveCredentials().accessKeyId())
-        .withFailMessage("The access key id should be the same as the one set by tag ACCESS_KEY_ID")
+    assertThat(credentialsProvider.resolveCredentials())
+        .as("Should use session credentials if session token is set")
+        .isInstanceOf(AwsSessionCredentials.class);
+    assertThat(credentialsProvider.resolveCredentials().accessKeyId())
+        .as("The access key id should be the same as the one set by tag ACCESS_KEY_ID")
         .isEqualTo("key");
-    Assertions.assertThat(credentialsProvider.resolveCredentials().secretAccessKey())
-        .withFailMessage(
-            "The secret access key should be the same as the one set by tag SECRET_ACCESS_KEY")
+    assertThat(credentialsProvider.resolveCredentials().secretAccessKey())
+        .as("The secret access key should be the same as the one set by tag SECRET_ACCESS_KEY")
         .isEqualTo("secret");
+  }
+
+  @Test
+  public void refreshCredentialsEndpoint() {
+    AwsClientProperties awsClientProperties =
+        new AwsClientProperties(
+            ImmutableMap.of(
+                AwsClientProperties.REFRESH_CREDENTIALS_ENDPOINT,
+                "http://localhost:1234/v1/credentials"));
+
+    assertThat(awsClientProperties.credentialsProvider("key", "secret", "token"))
+        .isInstanceOf(VendedCredentialsProvider.class);
+  }
+
+  @Test
+  public void refreshCredentialsEndpointSetButRefreshDisabled() {
+    AwsClientProperties awsClientProperties =
+        new AwsClientProperties(
+            ImmutableMap.of(
+                AwsClientProperties.REFRESH_CREDENTIALS_ENABLED,
+                "false",
+                AwsClientProperties.REFRESH_CREDENTIALS_ENDPOINT,
+                "http://localhost:1234/v1/credentials"));
+
+    assertThat(awsClientProperties.credentialsProvider("key", "secret", "token"))
+        .isInstanceOf(StaticCredentialsProvider.class);
+  }
+
+  @Test
+  public void refreshCredentialsEndpointWithOAuthToken() {
+    AwsClientProperties awsClientProperties =
+        new AwsClientProperties(
+            ImmutableMap.of(
+                AwsClientProperties.REFRESH_CREDENTIALS_ENDPOINT,
+                "http://localhost:1234/v1/credentials",
+                OAuth2Properties.TOKEN,
+                "oauth-token"));
+
+    AwsCredentialsProvider provider =
+        awsClientProperties.credentialsProvider("key", "secret", "token");
+    assertThat(provider).isInstanceOf(VendedCredentialsProvider.class);
+    VendedCredentialsProvider vendedCredentialsProvider = (VendedCredentialsProvider) provider;
+    assertThat(vendedCredentialsProvider)
+        .extracting("properties")
+        .isEqualTo(
+            ImmutableMap.of(
+                "credentials.uri",
+                "http://localhost:1234/v1/credentials",
+                OAuth2Properties.TOKEN,
+                "oauth-token"));
+  }
+
+  @Test
+  public void refreshCredentialsEndpointWithOverridingOAuthToken() {
+    AwsClientProperties awsClientProperties =
+        new AwsClientProperties(
+            ImmutableMap.of(
+                AwsClientProperties.REFRESH_CREDENTIALS_ENDPOINT,
+                "http://localhost:1234/v1/credentials",
+                OAuth2Properties.TOKEN,
+                "oauth-token",
+                "client.credentials-provider.token",
+                "specific-token"));
+
+    AwsCredentialsProvider provider =
+        awsClientProperties.credentialsProvider("key", "secret", "token");
+    assertThat(provider).isInstanceOf(VendedCredentialsProvider.class);
+    VendedCredentialsProvider vendedCredentialsProvider = (VendedCredentialsProvider) provider;
+    assertThat(vendedCredentialsProvider)
+        .extracting("properties")
+        .isEqualTo(
+            ImmutableMap.of(
+                "credentials.uri",
+                "http://localhost:1234/v1/credentials",
+                OAuth2Properties.TOKEN,
+                "specific-token"));
+  }
+
+  @Test
+  public void refreshCredentialsEndpointWithRelativePath() {
+    AwsClientProperties awsClientProperties =
+        new AwsClientProperties(
+            ImmutableMap.of(
+                CatalogProperties.URI,
+                "http://localhost:1234/v1",
+                AwsClientProperties.REFRESH_CREDENTIALS_ENDPOINT,
+                "/relative/credentials/endpoint",
+                OAuth2Properties.TOKEN,
+                "oauth-token"));
+
+    AwsCredentialsProvider provider =
+        awsClientProperties.credentialsProvider("key", "secret", "token");
+    assertThat(provider).isInstanceOf(VendedCredentialsProvider.class);
+    VendedCredentialsProvider vendedCredentialsProvider = (VendedCredentialsProvider) provider;
+    assertThat(vendedCredentialsProvider)
+        .extracting("properties")
+        .isEqualTo(
+            ImmutableMap.of(
+                "credentials.uri",
+                "http://localhost:1234/v1/relative/credentials/endpoint",
+                OAuth2Properties.TOKEN,
+                "oauth-token"));
   }
 }

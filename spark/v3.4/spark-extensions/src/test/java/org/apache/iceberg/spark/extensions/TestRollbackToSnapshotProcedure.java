@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.spark.extensions;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.Snapshot;
@@ -27,9 +29,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.spark.sql.AnalysisException;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.catalyst.analysis.NoSuchProcedureException;
-import org.assertj.core.api.Assertions;
+import org.apache.spark.sql.catalyst.parser.ParseException;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
 
@@ -240,7 +242,7 @@ public class TestRollbackToSnapshotProcedure extends SparkExtensionsTestBase {
   public void testRollbackToInvalidSnapshot() {
     sql("CREATE TABLE %s (id bigint NOT NULL, data string) USING iceberg", tableName);
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () -> sql("CALL %s.system.rollback_to_snapshot('%s', -1L)", catalogName, tableIdent))
         .isInstanceOf(ValidationException.class)
         .hasMessage("Cannot roll back to unknown snapshot id: -1");
@@ -248,7 +250,7 @@ public class TestRollbackToSnapshotProcedure extends SparkExtensionsTestBase {
 
   @Test
   public void testInvalidRollbackToSnapshotCases() {
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 sql(
                     "CALL %s.system.rollback_to_snapshot(namespace => 'n1', table => 't', 1L)",
@@ -256,32 +258,32 @@ public class TestRollbackToSnapshotProcedure extends SparkExtensionsTestBase {
         .isInstanceOf(AnalysisException.class)
         .hasMessage("Named and positional arguments cannot be mixed");
 
-    Assertions.assertThatThrownBy(
-            () -> sql("CALL %s.custom.rollback_to_snapshot('n', 't', 1L)", catalogName))
-        .isInstanceOf(NoSuchProcedureException.class)
-        .hasMessage("Procedure custom.rollback_to_snapshot not found");
+    assertThatThrownBy(() -> sql("CALL %s.custom.rollback_to_snapshot('n', 't', 1L)", catalogName))
+        .isInstanceOf(ParseException.class)
+        .satisfies(
+            exception -> {
+              ParseException parseException = (ParseException) exception;
+              Assert.assertEquals("PARSE_SYNTAX_ERROR", parseException.getErrorClass());
+              Assert.assertEquals("'CALL'", parseException.getMessageParameters().get("error"));
+            });
 
-    Assertions.assertThatThrownBy(
-            () -> sql("CALL %s.system.rollback_to_snapshot('t')", catalogName))
+    assertThatThrownBy(() -> sql("CALL %s.system.rollback_to_snapshot('t')", catalogName))
         .isInstanceOf(AnalysisException.class)
         .hasMessage("Missing required parameters: [snapshot_id]");
 
-    Assertions.assertThatThrownBy(() -> sql("CALL %s.system.rollback_to_snapshot(1L)", catalogName))
+    assertThatThrownBy(() -> sql("CALL %s.system.rollback_to_snapshot(1L)", catalogName))
         .isInstanceOf(AnalysisException.class)
         .hasMessage("Missing required parameters: [snapshot_id]");
 
-    Assertions.assertThatThrownBy(
-            () -> sql("CALL %s.system.rollback_to_snapshot(table => 't')", catalogName))
+    assertThatThrownBy(() -> sql("CALL %s.system.rollback_to_snapshot(table => 't')", catalogName))
         .isInstanceOf(AnalysisException.class)
         .hasMessage("Missing required parameters: [snapshot_id]");
 
-    Assertions.assertThatThrownBy(
-            () -> sql("CALL %s.system.rollback_to_snapshot('t', 2.2)", catalogName))
+    assertThatThrownBy(() -> sql("CALL %s.system.rollback_to_snapshot('t', 2.2)", catalogName))
         .isInstanceOf(AnalysisException.class)
         .hasMessage("Wrong arg type for snapshot_id: cannot cast DecimalType(2,1) to LongType");
 
-    Assertions.assertThatThrownBy(
-            () -> sql("CALL %s.system.rollback_to_snapshot('', 1L)", catalogName))
+    assertThatThrownBy(() -> sql("CALL %s.system.rollback_to_snapshot('', 1L)", catalogName))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot handle an empty identifier for argument table");
   }

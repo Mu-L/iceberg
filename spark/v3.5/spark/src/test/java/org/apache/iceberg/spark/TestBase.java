@@ -118,7 +118,7 @@ public abstract class TestBase extends SparkTestHelperBase {
 
   protected List<Object[]> sql(String query, Object... args) {
     List<Row> rows = spark.sql(String.format(query, args)).collectAsList();
-    if (rows.size() < 1) {
+    if (rows.isEmpty()) {
       return ImmutableList.of();
     }
 
@@ -142,7 +142,7 @@ public abstract class TestBase extends SparkTestHelperBase {
   }
 
   protected void withUnavailableFiles(Iterable<? extends ContentFile<?>> files, Action action) {
-    Iterable<String> fileLocations = Iterables.transform(files, file -> file.path().toString());
+    Iterable<String> fileLocations = Iterables.transform(files, ContentFile::location);
     withUnavailableLocations(fileLocations, action);
   }
 

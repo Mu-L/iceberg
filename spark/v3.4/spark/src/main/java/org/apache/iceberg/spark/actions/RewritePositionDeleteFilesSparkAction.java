@@ -59,6 +59,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.math.IntMath;
 import org.apache.iceberg.relocated.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.iceberg.relocated.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.iceberg.spark.SparkUtil;
 import org.apache.iceberg.types.Types.StructType;
 import org.apache.iceberg.util.PartitionUtil;
 import org.apache.iceberg.util.PropertyUtil;
@@ -92,11 +93,13 @@ public class RewritePositionDeleteFilesSparkAction
   private int maxCommits;
   private boolean partialProgressEnabled;
   private RewriteJobOrder rewriteJobOrder;
+  private boolean caseSensitive;
 
   RewritePositionDeleteFilesSparkAction(SparkSession spark, Table table) {
     super(spark);
     this.table = table;
     this.rewriter = new SparkBinPackPositionDeletesRewriter(spark(), table);
+    this.caseSensitive = SparkUtil.caseSensitive(spark);
   }
 
   @Override
@@ -137,10 +140,12 @@ public class RewritePositionDeleteFilesSparkAction
   }
 
   private StructLikeMap<List<List<PositionDeletesScanTask>>> planFileGroups() {
-    CloseableIterable<PositionDeletesScanTask> fileTasks = planFiles();
+    Table deletesTable =
+        MetadataTableUtils.createMetadataTableInstance(table, MetadataTableType.POSITION_DELETES);
+    CloseableIterable<PositionDeletesScanTask> fileTasks = planFiles(deletesTable);
 
     try {
-      StructType partitionType = Partitioning.partitionType(table);
+      StructType partitionType = Partitioning.partitionType(deletesTable);
       StructLikeMap<List<PositionDeletesScanTask>> fileTasksByPartition =
           groupByPartition(partitionType, fileTasks);
       return fileGroupsByPartition(fileTasksByPartition);
@@ -153,13 +158,11 @@ public class RewritePositionDeleteFilesSparkAction
     }
   }
 
-  private CloseableIterable<PositionDeletesScanTask> planFiles() {
-    Table deletesTable =
-        MetadataTableUtils.createMetadataTableInstance(table, MetadataTableType.POSITION_DELETES);
-
+  private CloseableIterable<PositionDeletesScanTask> planFiles(Table deletesTable) {
     PositionDeletesBatchScan scan = (PositionDeletesBatchScan) deletesTable.newBatchScan();
+
     return CloseableIterable.transform(
-        scan.baseTableFilter(filter).ignoreResiduals().planFiles(),
+        scan.baseTableFilter(filter).caseSensitive(caseSensitive).ignoreResiduals().planFiles(),
         task -> (PositionDeletesScanTask) task);
   }
 
@@ -310,7 +313,7 @@ public class RewritePositionDeleteFilesSparkAction
     // stop commit service
     commitService.close();
     List<RewritePositionDeletesGroup> commitResults = commitService.results();
-    if (commitResults.size() == 0) {
+    if (commitResults.isEmpty()) {
       LOG.error(
           "{} is true but no rewrite commits succeeded. Check the logs to determine why the individual "
               + "commits failed. If this is persistent it may help to increase {} which will break the rewrite operation "
@@ -332,7 +335,7 @@ public class RewritePositionDeleteFilesSparkAction
       RewriteExecutionContext ctx,
       Map<StructLike, List<List<PositionDeletesScanTask>>> groupsByPartition) {
     return groupsByPartition.entrySet().stream()
-        .filter(e -> e.getValue().size() != 0)
+        .filter(e -> !e.getValue().isEmpty())
         .flatMap(
             e -> {
               StructLike partition = e.getKey();
